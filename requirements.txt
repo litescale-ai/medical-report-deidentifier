@@ -1,3 +1,4 @@
 google-antigravity
 pydantic
 python-dotenv
+streamlit
