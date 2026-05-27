@@ -1,0 +1,90 @@
+import os
+import mimetypes
+import pathlib
+from pydantic import BaseModel, Field
+from google.antigravity import Agent, LocalAgentConfig
+from google.antigravity.types import Document, Image, Audio, Video
+
+class VerbatimItem(BaseModel):
+    timestamp_start: str = Field(description="The timestamp of the dialogue or activity start (e.g. '00:00:15' or 'page 1')")
+    timestamp_end: str = Field(description="The timestamp of the dialogue or activity end (e.g. '00:00:25' or 'page 1')")
+    speaker: str = Field(description="Speaker name or label (e.g. 'Interviewer', 'Subject', 'Narrator', 'Visual Action')")
+    content: str = Field(description="Verbatim spoken text or descriptive activity text (if video action)")
+
+class ExtractedTranscript(BaseModel):
+    filename: str = Field(description="The source filename")
+    file_type: str = Field(description="The type of file (e.g. 'PDF Document', 'Audio Interview', 'Video Assessment')")
+    summary: str = Field(description="A brief high-level overview of this session/file")
+    items: list[VerbatimItem] = Field(description="The detailed chronological verbatim transcription/extraction items")
+
+def load_media_file(filepath: str):
+    """Loads a media file into the correct Antigravity media type."""
+    ext = os.path.splitext(filepath)[1].lower()
+    
+    # Handle simple text files directly as string
+    if ext == ".txt":
+        with open(filepath, "r", encoding="utf-8") as f:
+            return f.read()
+            
+    mime_type, _ = mimetypes.guess_type(filepath)
+    if not mime_type:
+        # Fallback based on extension
+        if ext in ['.pdf', '.rtf', '.html', '.xml']:
+            return Document.from_file(filepath)
+        elif ext in ['.png', '.jpg', '.jpeg', '.webp']:
+            return Image.from_file(filepath)
+        elif ext in ['.mp3', '.wav', '.m4a', '.flac']:
+            return Audio.from_file(filepath)
+        elif ext in ['.mp4', '.webm', '.mov', '.avi']:
+            return Video.from_file(filepath)
+        raise ValueError(f"Unknown extension and MIME type for file {filepath}")
+        
+    if mime_type.startswith("image/"):
+        return Image.from_file(filepath)
+    elif mime_type.startswith("audio/"):
+        return Audio.from_file(filepath)
+    elif mime_type.startswith("video/"):
+        return Video.from_file(filepath)
+    elif mime_type == "application/pdf" or mime_type.startswith("text/"):
+        return Document.from_file(filepath)
+    else:
+        return Document.from_file(filepath)
+
+async def transcribe_media(filepath: str, api_key: str = None) -> dict:
+    """Uses the TranscriberAgent to extract verbatim text and descriptions from a media file."""
+    filename = os.path.basename(filepath)
+    media = load_media_file(filepath)
+    
+    system_instructions = (
+        "You are an expert multimodal medical transcriber. Your task is to process input media files "
+        "(audio, video, documents) and extract all spoken text, written text, and detailed visual descriptions "
+        "(especially of subjects' physical/behavioral activities in video) verbatim.\n"
+        "Ensure that for audio/video you capture timing indicators (e.g. '00:01:23'). "
+        "For PDF/text documents, use page numbers or logical headers as timing/location indicators.\n"
+        "Do not summarize or paraphrase dialogue - extract it word-for-word. "
+        "For visual descriptions in video, log them chronologically as 'Visual Action' speaker items, "
+        "describing the patient's behaviors, movements, or physical state in detail."
+    )
+    
+    config = LocalAgentConfig(
+        api_key=api_key,
+        system_instructions=system_instructions,
+        response_schema=ExtractedTranscript
+    )
+    
+    prompt = (
+        f"Verbatim extract and transcribe all content from this file '{filename}'.\n"
+        "Provide verbatim dialogue and detailed behavioral activity descriptions where applicable."
+    )
+    
+    async with Agent(config=config) as agent:
+        # Pass both the text prompt and the loaded media content in the chat turn
+        if isinstance(media, str):
+            # If it was a plain text file, we just append the text
+            full_prompt = f"{prompt}\n\n=== FILE CONTENT ===\n{media}"
+            response = await agent.chat(full_prompt)
+        else:
+            response = await agent.chat([prompt, media])
+            
+        data = await response.structured_output()
+        return data

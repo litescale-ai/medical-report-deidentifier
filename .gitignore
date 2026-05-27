@@ -1,0 +1,24 @@
+# Python virtual environment
+.venv/
+__pycache__/
+*.pyc
+
+# Local environment configuration (contains sensitive API keys)
+.env
+.env*
+
+# Medical Data & Privacy Isolation
+# We exclude raw inputs, final outputs, and secure local identity catalogues
+data/input/*
+data/output/*
+data/secure/*
+
+# Allow git to track folders but not contents by ignoring everything except .gitkeep
+!data/input/.gitkeep
+!data/output/.gitkeep
+!data/secure/.gitkeep
+
+# System and IDE configurations
+.DS_Store
+.vscode/
+.idea/
