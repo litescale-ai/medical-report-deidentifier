@@ -88,7 +88,7 @@ section() {
 step() {
     # $1 = step number, $2 = description
     if $HAS_GUM; then
-        gum style --foreground 212 --bold "  ▸ Step $1  " --italic "$2"
+        gum style --foreground 212 --bold --italic "  ▸ Step $1  $2"
     else
         echo -e "  ${BR_MAGENTA}▸ Step $1${NC}  ${ITALIC}$2${NC}"
     fi
