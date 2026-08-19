@@ -402,20 +402,67 @@ elif [[ "$BACKEND_CHOICE" == *"Ollama"* ]]; then
         success "Ollama is installed"
     fi
 
+    # Version check — ensure Ollama is up-to-date and no stale server is running
+    MIN_OLLAMA_VERSION="0.30.0"
+    ollama_version_output=$(ollama --version 2>&1)
+    ollama_server_ver=$(echo "$ollama_version_output" | grep -oE 'version is [0-9]+\.[0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+    ollama_client_ver=$(echo "$ollama_version_output" | grep -oE 'client version is [0-9]+\.[0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+
+    # Use client version if available, otherwise server version
+    effective_ver="${ollama_client_ver:-$ollama_server_ver}"
+    info "Ollama version: ${effective_ver:-unknown}"
+
+    # If client is newer than server, a stale Ollama.app process may be running
+    if [ -n "$ollama_client_ver" ] && [ -n "$ollama_server_ver" ] && [ "$ollama_client_ver" != "$ollama_server_ver" ]; then
+        warn "Server ($ollama_server_ver) is older than client ($ollama_client_ver)"
+        info "A stale Ollama.app process may be running — restarting..."
+        pkill -9 -f "Ollama.app" 2>/dev/null || true
+        pkill -9 -f "ollama serve" 2>/dev/null || true
+        sleep 2
+        ollama serve &>/dev/null &
+        sleep 2
+        success "Ollama server restarted ($(ollama --version 2>&1 | grep -oE 'version is [0-9.]+' | grep -oE '[0-9.]+'))"
+    fi
+
+    # Check if the binary itself is too old
+    ver_to_compare="${ollama_client_ver:-$ollama_server_ver}"
+    if [ -n "$ver_to_compare" ]; then
+        # Simple numeric version comparison
+        ver_major=$(echo "$ver_to_compare" | cut -d. -f1)
+        ver_minor=$(echo "$ver_to_compare" | cut -d. -f2)
+        min_major=$(echo "$MIN_OLLAMA_VERSION" | cut -d. -f1)
+        min_minor=$(echo "$MIN_OLLAMA_VERSION" | cut -d. -f2)
+        if [ "$ver_major" -lt "$min_major" ] || { [ "$ver_major" -eq "$min_major" ] && [ "$ver_minor" -lt "$min_minor" ]; }; then
+            warn "Ollama $ver_to_compare is too old for Gemma 4 (need >= $MIN_OLLAMA_VERSION)"
+            if command -v brew &>/dev/null && confirm "Upgrade Ollama via Homebrew?"; then
+                spin "Upgrading Ollama..." brew upgrade ollama
+                pkill -9 -f "ollama serve" 2>/dev/null || true
+                sleep 1
+                ollama serve &>/dev/null &
+                sleep 2
+                success "Ollama upgraded"
+            else
+                fail "Please update Ollama manually: https://ollama.com/download"
+                exit 1
+            fi
+        fi
+    fi
+
     # Choose model
     echo ""
     info "Select a Gemma 4 model variant:"
     echo ""
 
     MODEL_CHOICE=$(choose \
-        "gemma4:4b   — Lightweight (~2.5 GB)" \
-        "gemma4:12b  — Balanced  (~7 GB) ★ Recommended" \
-        "gemma4:27b  — Full (~16 GB, needs 32GB+ RAM)"
+        "gemma4:e4b  — Sweet spot for laptops (~3 GB) ★ Recommended" \
+        "gemma4:e2b  — Lightweight edge model (~1.5 GB)" \
+        "gemma4:12b  — Mid-range workstation (~7 GB)" \
+        "gemma4:26b  — MoE, 4B active params (~15 GB)"
     )
     OLLAMA_MODEL="${MODEL_CHOICE%%  *}"  # Extract model name before the double space
 
     divider
-    info "Selected: ${BOLD}$OLLAMA_MODEL${NC}"
+    success "Selected: $OLLAMA_MODEL"
     echo ""
 
     # Pull model if needed

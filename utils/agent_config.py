@@ -12,7 +12,7 @@ from google.antigravity import LocalAgentConfig, LocalOpenAIAgentConfig
 
 # Defaults for the Ollama backend
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434/v1"
-DEFAULT_OLLAMA_MODEL = "gemma4:12b"
+DEFAULT_OLLAMA_MODEL = "gemma4:e4b"
 
 
 def build_agent_config(
@@ -31,7 +31,7 @@ def build_agent_config(
         response_schema: Optional Pydantic model or dict for structured output.
         backend: "gemini" or "ollama". Falls back to env var AGENT_BACKEND, then "gemini".
         api_key: Gemini API key (only used when backend is "gemini").
-        ollama_model: Ollama model name, e.g. "gemma4:12b".
+        ollama_model: Ollama model name, e.g. "gemma4:e4b".
         ollama_base_url: Ollama OpenAI-compat endpoint URL.
     """
     backend = (backend or os.getenv("AGENT_BACKEND", "gemini")).lower().strip()

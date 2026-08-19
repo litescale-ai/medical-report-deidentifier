@@ -170,7 +170,7 @@ if run_mode.startswith("🌟"):
 elif run_mode.startswith("🏠"):
     ollama_model = st.sidebar.selectbox(
         "Ollama Model",
-        ["gemma4:12b", "gemma4:4b", "gemma4:27b"],
+        ["gemma4:e4b", "gemma4:e2b", "gemma4:12b", "gemma4:26b"],
         index=0,
         help="Select the Gemma 4 model variant pulled in Ollama."
     )
@@ -181,7 +181,7 @@ elif run_mode.startswith("🏠"):
     )
     st.sidebar.info(
         "💡 **Setup:** Install Ollama and pull Gemma 4:\n"
-        "```\nbrew install ollama\nollama pull gemma4:12b\n```"
+        "```\nbrew install ollama\nollama pull gemma4:e4b\n```"
     )
     st.session_state["_backend"] = "ollama"
     st.session_state["_ollama_model"] = ollama_model
