@@ -347,7 +347,7 @@ with tab_deidentify:
                                     deidentified_doc_paths.append(out_path)
                                     add_log(f"  ✓ {fname} → {out_name} (formatting preserved)")
                                 else:
-                                    add_log(f"  · {fname}: unsearchable text/scanned document, skipped in-place redaction")
+                                    add_log(f"  · {fname}: scanned/unsearchable — OCR did not find matches")
                             except Exception as e:
                                 add_log(f"  ✗ Error processing {fname}: {e}")
                         else:

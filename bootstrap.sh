@@ -236,6 +236,23 @@ else
     missing+=("python3.12")
 fi
 
+# Tesseract is needed by ocrmypdf for scanned PDF support
+if command -v tesseract &>/dev/null; then
+    success "tesseract found (OCR support)"
+else
+    warn "tesseract not found (needed for scanned PDF support)"
+    if command -v brew &>/dev/null; then
+        if confirm "Install tesseract via Homebrew?"; then
+            spin "Installing tesseract..." brew install tesseract
+            success "tesseract installed"
+        else
+            warn "Scanned PDFs will not be de-identified without tesseract"
+        fi
+    else
+        warn "Install tesseract manually for scanned PDF support"
+    fi
+fi
+
 # Offer to install gum if not present
 if ! $HAS_GUM; then
     info "Optional: install 'gum' for a premium installer experience"

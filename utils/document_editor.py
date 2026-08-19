@@ -114,33 +114,58 @@ def _extract_span_style(page, search_rect) -> dict:
     }
 
 
-def deidentify_pdf(
-    input_path: str,
-    output_path: str,
-    replacement_map: dict[str, str],
-) -> bool:
-    """Replace PII strings in a PDF with pseudonym hashes, preserving layout.
+def _is_pdf_searchable(doc, replacement_map: dict[str, str]) -> bool:
+    """Quick check: does the PDF have a usable text layer?
 
-    Uses span-level text matching to avoid partial-word matches, and a
-    two-phase redact-then-insert approach for reliable text replacement.
+    Returns True if search_for() can find at least one of the replacement
+    targets anywhere in the document.  Returns False for scanned / CIDFont
+    PDFs with no ToUnicode mapping.
+    """
+    sorted_keys = sorted(replacement_map.keys(), key=len, reverse=True)
+    for page in doc:
+        for target in sorted_keys:
+            if not target.strip():
+                continue
+            if page.search_for(target):
+                return True
+    return False
 
-    Args:
-        input_path: Path to the original PDF.
-        output_path: Path to save the de-identified PDF.
-        replacement_map: Mapping of real PII strings → pseudonym hashes.
 
-    Returns:
-        True if the PDF was successfully processed.
+def _ocr_pdf(input_path: str) -> str:
+    """Run OCR on a PDF to produce a searchable copy.
+
+    Uses ocrmypdf (Tesseract) with force_ocr to replace any broken
+    text layer with a fresh OCR'd one.  Returns the path to the OCR'd
+    temporary file.
+    """
+    import tempfile
+    import ocrmypdf
+
+    fd, ocr_path = tempfile.mkstemp(suffix=".pdf")
+    os.close(fd)
+
+    ocrmypdf.ocr(
+        input_path,
+        ocr_path,
+        force_ocr=True,
+        optimize=1,
+        progress_bar=False,
+    )
+    return ocr_path
+
+
+def _redact_pdf(input_path: str, output_path: str, replacement_map: dict[str, str]) -> int:
+    """Core redaction logic: search → redact → insert replacement text.
+
+    Returns the total number of replacements made.
     """
     import pymupdf
 
     doc = pymupdf.open(input_path)
     total_replacements = 0
-    
     sorted_keys = sorted(replacement_map.keys(), key=len, reverse=True)
 
     for page in doc:
-        # Phase 1: Collect all replacements using search_for for robust cross-span matching
         replacements = []
         for target in sorted_keys:
             if not target.strip():
@@ -155,18 +180,17 @@ def deidentify_pdf(
 
         total_replacements += len(replacements)
 
-        # Phase 2: Redact all matched regions
+        # Redact all matched regions
         for rect, _, _ in replacements:
             page.add_redact_annot(rect, fill=(1, 1, 1))
         page.apply_redactions()
 
-        # Phase 3: Insert replacement text at original positions
+        # Insert replacement text at original positions
         for rect, replacement, style in replacements:
             base_font = _pymupdf_fontname_to_base(style["fontname"])
             fontsize = style["size"]
             color = style["color"]
 
-            # insert_text uses the baseline point; offset from bottom of bbox
             insert_point = pymupdf.Point(rect.x0, rect.y1 - 1)
             page.insert_text(
                 insert_point,
@@ -178,7 +202,67 @@ def deidentify_pdf(
 
     doc.save(output_path)
     doc.close()
-    return total_replacements > 0
+    return total_replacements
+
+
+def deidentify_pdf(
+    input_path: str,
+    output_path: str,
+    replacement_map: dict[str, str],
+) -> bool:
+    """Replace PII strings in a PDF with pseudonym hashes, preserving layout.
+
+    Uses a two-phase approach:
+      1. Try direct text search on the original PDF.
+      2. If the text layer is unsearchable (scanned / broken CIDFonts),
+         automatically OCR the PDF first, then retry redaction.
+
+    Args:
+        input_path: Path to the original PDF.
+        output_path: Path to save the de-identified PDF.
+        replacement_map: Mapping of real PII strings → pseudonym hashes.
+
+    Returns:
+        True if the PDF was successfully processed with at least one replacement.
+    """
+    import pymupdf
+
+    # First attempt: direct redaction
+    doc = pymupdf.open(input_path)
+    searchable = _is_pdf_searchable(doc, replacement_map)
+    doc.close()
+
+    if searchable:
+        count = _redact_pdf(input_path, output_path, replacement_map)
+        return count > 0
+
+    # Fallback: OCR the PDF, then redact the OCR'd version
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info("PDF text layer is unsearchable — running OCR fallback...")
+
+    ocr_path = None
+    try:
+        ocr_path = _ocr_pdf(input_path)
+        count = _redact_pdf(ocr_path, output_path, replacement_map)
+        if count > 0:
+            logger.info(f"OCR fallback succeeded: {count} replacements made")
+            return True
+        else:
+            logger.warning("OCR fallback produced 0 replacements — OCR may not have recognised the text")
+            # Still copy the OCR'd version so the user at least gets a searchable PDF
+            import shutil
+            shutil.copy2(ocr_path, output_path)
+            return False
+    except Exception as e:
+        logger.error(f"OCR fallback failed: {e}")
+        # Copy original as-is so downstream doesn't break
+        import shutil
+        shutil.copy2(input_path, output_path)
+        return False
+    finally:
+        if ocr_path and os.path.exists(ocr_path):
+            os.unlink(ocr_path)
 
 
 # ---------------------------------------------------------------------------

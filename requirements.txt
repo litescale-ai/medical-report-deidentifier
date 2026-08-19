@@ -4,3 +4,4 @@ python-dotenv
 streamlit
 pymupdf
 python-docx
+ocrmypdf
