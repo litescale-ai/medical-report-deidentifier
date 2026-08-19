@@ -30,6 +30,47 @@ st.set_page_config(
 load_dotenv()
 dirs = get_data_dirs()
 
+
+def _build_deidentified_text(deidentified_chrono: dict) -> str:
+    """Build a readable plain-text transcription from the de-identified chronology.
+
+    Produces a document suitable for external review: patient summary
+    followed by each chronological event with timestamp, speaker, and details.
+    """
+    lines = []
+    lines.append("=" * 72)
+    lines.append("DE-IDENTIFIED TRANSCRIPTION")
+    lines.append("=" * 72)
+    lines.append("")
+
+    summary = deidentified_chrono.get("patient_summary", "")
+    if summary:
+        lines.append("PATIENT SUMMARY:")
+        lines.append(summary)
+        lines.append("")
+
+    categories = deidentified_chrono.get("categories_found", [])
+    if categories:
+        lines.append("CATEGORIES: " + ", ".join(categories))
+        lines.append("")
+
+    lines.append("-" * 72)
+    lines.append("CHRONOLOGICAL EVENTS")
+    lines.append("-" * 72)
+    lines.append("")
+
+    for i, event in enumerate(deidentified_chrono.get("chronology", []), 1):
+        timestamp = event.get("timestamp", "N/A")
+        speaker = event.get("speaker", "Unknown")
+        category = event.get("category", "")
+        details = event.get("event_details", "")
+
+        lines.append(f"[{i}] {timestamp}  |  Speaker: {speaker}  |  Category: {category}")
+        lines.append(details)
+        lines.append("")
+
+    return "\n".join(lines)
+
 # Custom Premium Styling
 st.markdown("""
 <style>
@@ -364,10 +405,18 @@ with tab_deidentify:
                     shareable_json_path = os.path.join(dirs["output"], "shareable_pseudonymised_report.json")
                     save_json(deidentified_chrono, shareable_json_path)
                     
+                    # Generate de-identified plain text transcription
+                    deidentified_text = _build_deidentified_text(deidentified_chrono)
+                    deidentified_text_path = os.path.join(dirs["output"], "deidentified_transcription.txt")
+                    with open(deidentified_text_path, "w", encoding="utf-8") as f:
+                        f.write(deidentified_text)
+                    add_log("  - De-identified transcription text generated.")
+                    
                     add_log("[SYSTEM] PIPELINE RUN SUCCESSFULLY COMPLETED!")
                     st.success("Pipeline executed successfully! Scroll down to review and download outputs.")
                     st.session_state["pipeline_run"] = deidentified_chrono
                     st.session_state["synthesis_summary_txt"] = synthesis_txt
+                    st.session_state["deidentified_text"] = deidentified_text
                     st.session_state["deidentified_doc_paths"] = deidentified_doc_paths
                     
                 except Exception as e:
@@ -386,10 +435,12 @@ with tab_deidentify:
         st.markdown('<div class="glass-card">', unsafe_allow_html=True)
         st.subheader("📥 3. Download De-identified Reports")
         
-        col1, col2 = st.columns(2)
+        deidentified_text = st.session_state.get("deidentified_text", "")
+        
+        col1, col2, col3 = st.columns(3)
         with col1:
             st.download_button(
-                label="📋 Download Synthesis Summary (.txt)",
+                label="📋 Synthesis Summary (.txt)",
                 data=synthesis_txt,
                 file_name="synthesis_summary.txt",
                 mime="text/plain",
@@ -397,7 +448,15 @@ with tab_deidentify:
             )
         with col2:
             st.download_button(
-                label="📊 Download Shareable JSON Report (.json)",
+                label="📄 Redacted Transcription (.txt)",
+                data=deidentified_text,
+                file_name="deidentified_transcription.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+        with col3:
+            st.download_button(
+                label="📊 Shareable JSON (.json)",
                 data=json.dumps(deidentified_chrono, indent=2, ensure_ascii=False),
                 file_name="shareable_pseudonymised_report.json",
                 mime="application/json",
