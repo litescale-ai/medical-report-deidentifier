@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from utils.helpers import get_data_dirs, save_json, load_json
+from utils.document_editor import deidentify_document, write_synthesis_summary
 from agents.transcriber import transcribe_media
 from agents.cataloguer import catalogue_transcripts
 from agents.deidentifier import discover_pii_entities, perform_deidentification
@@ -107,7 +108,7 @@ async def run_pipeline():
         print(f"Discovered {len(discovered_entities)} unique PII entities and relationships.")
         
         # Perform deterministic pseudonymisation
-        deidentified_chrono, identity_catalogue = perform_deidentification(
+        deidentified_chrono, identity_catalogue, replacement_map = perform_deidentification(
             unified_chronology, discovered_entities
         )
         
@@ -123,43 +124,46 @@ async def run_pipeline():
     except Exception as e:
         print(f"Error during de-identification stage: {e}")
         return
-        
-    # 6. Stage 3.3: Appending instructions and preparing final shareable report
-    print("\n--- Stage 3.3: Preparing final shareable pseudonymised report ---")
+
+    # 6. Stage 3.2b: In-place document de-identification (PDF/DOCX)
+    print("\n--- Stage 3.2b: De-identifying original documents in-place ---")
+    doc_extensions = {".pdf", ".docx"}
+    deidentified_docs = []
+    for filepath in input_files:
+        filename = os.path.basename(filepath)
+        ext = os.path.splitext(filename)[1].lower()
+        if ext in doc_extensions:
+            out_name = f"deidentified_{filename}"
+            out_path = os.path.join(output_dir, out_name)
+            try:
+                success = deidentify_document(filepath, out_path, replacement_map)
+                if success:
+                    deidentified_docs.append(out_path)
+                    print(f"  ✓ {filename} → {out_name} (formatting preserved)")
+                else:
+                    print(f"  ⚠ {filename}: unsupported format, skipped")
+            except Exception as e:
+                print(f"  ✗ Error processing {filename}: {e}")
+        else:
+            print(f"  · {filename}: not a PDF/DOCX, covered by text/JSON output")
+
+    # 7. Stage 3.3: Generate synthesis summary and shareable reports
+    print("\n--- Stage 3.3: Preparing synthesis summary and shareable reports ---")
     try:
-        # Create a text-formatted human-readable report with instructions
-        report_txt = RECIPIENT_INSTRUCTIONS
-        report_txt += f"PATIENT SYNTHESIS SUMMARY:\n{deidentified_chrono.get('patient_summary', '')}\n\n"
-        report_txt += f"IDENTIFIED CATEGORIES:\n"
-        for cat in deidentified_chrono.get('categories_found', []):
-            report_txt += f"- {cat}\n"
-        report_txt += "\n"
-        
-        report_txt += "================================================================================\n"
-        report_txt += "UNIFIED CLINICAL TIMELINE (PSEUDONYMISED)\n"
-        report_txt += "================================================================================\n\n"
-        
-        for idx, event in enumerate(deidentified_chrono.get("chronology", [])):
-            report_txt += f"Event #{idx + 1}\n"
-            report_txt += f"Timestamp: {event.get('timestamp')}\n"
-            report_txt += f"Category:  {event.get('category')}\n"
-            report_txt += f"Source:    {event.get('source_file')}\n"
-            report_txt += f"Speaker:   {event.get('speaker')}\n"
-            report_txt += f"Details:   {event.get('event_details')}\n"
-            report_txt += "-" * 80 + "\n\n"
-            
-        # Save the shareable report as text
-        shareable_txt_path = os.path.join(output_dir, "shareable_pseudonymised_report.txt")
-        with open(shareable_txt_path, "w", encoding="utf-8") as f:
-            f.write(report_txt)
+        # Write the standalone synthesis summary
+        synthesis_path = os.path.join(output_dir, "synthesis_summary.txt")
+        write_synthesis_summary(synthesis_path, deidentified_chrono, identity_catalogue)
+        print(f"  - Synthesis Summary: {synthesis_path}")
             
         # Also save the pure deidentified JSON in output for easy programmatic use
         shareable_json_path = os.path.join(output_dir, "shareable_pseudonymised_report.json")
         save_json(deidentified_chrono, shareable_json_path)
         
-        print(f"Success! Final shareable reports generated at:")
-        print(f"  - Text Format: {shareable_txt_path}")
-        print(f"  - JSON Format: {shareable_json_path}")
+        print(f"\nSuccess! Final shareable outputs generated at:")
+        print(f"  - Synthesis Summary: {synthesis_path}")
+        print(f"  - JSON Format:       {shareable_json_path}")
+        for doc_path in deidentified_docs:
+            print(f"  - Document:          {doc_path}")
         
     except Exception as e:
         print(f"Error preparing final output files: {e}")

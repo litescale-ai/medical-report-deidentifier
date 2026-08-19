@@ -10,11 +10,13 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from utils.helpers import get_data_dirs, save_json, load_json
+from utils.document_editor import (
+    deidentify_document, write_synthesis_summary, reidentify_document,
+)
 from agents.transcriber import transcribe_media
 from agents.cataloguer import catalogue_transcripts
 from agents.deidentifier import discover_pii_entities, perform_deidentification
 from reidentify import reidentify_report
-from main import RECIPIENT_INSTRUCTIONS
 
 # Page Config
 st.set_page_config(
@@ -304,7 +306,7 @@ with tab_deidentify:
                     
                     # Stage 3.2: Deterministic replacement (Runs same python code for both modes!)
                     add_log("[Stage 3.2] Generating pseudonym hashes and applying deterministic replacement...")
-                    deidentified_chrono, identity_catalogue = perform_deidentification(
+                    deidentified_chrono, identity_catalogue, replacement_map = perform_deidentification(
                         unified_chronology, discovered_entities
                     )
                     
@@ -314,26 +316,39 @@ with tab_deidentify:
                     add_log("  - Secure Identity Catalogue generated locally.")
                     add_log("  - Replaced all discovered PII names & aliases with secure hashes.")
                     
-                    # Stage 3.3: Preparing final outputs with recipient instructions
-                    add_log("[Stage 3.3] Appending critical instructions block and preparing shareable files...")
+                    # Stage 3.2b: In-place document de-identification (PDF/DOCX)
+                    add_log("[Stage 3.2b] De-identifying original documents in-place...")
+                    doc_extensions = {".pdf", ".docx"}
+                    deidentified_doc_paths = []
+                    input_files_list = [
+                        os.path.join(dirs["input"], f.name) for f in uploaded_files
+                    ] if uploaded_files else []
                     
-                    report_txt = RECIPIENT_INSTRUCTIONS
-                    report_txt += f"PATIENT SYNTHESIS SUMMARY:\n{deidentified_chrono.get('patient_summary', '')}\n\n"
-                    report_txt += "================================================================================\n"
-                    report_txt += "UNIFIED CLINICAL TIMELINE (PSEUDONYMISED)\n"
-                    report_txt += "================================================================================\n\n"
+                    for filepath in input_files_list:
+                        fname = os.path.basename(filepath)
+                        ext = os.path.splitext(fname)[1].lower()
+                        if ext in doc_extensions:
+                            out_name = f"deidentified_{fname}"
+                            out_path = os.path.join(dirs["output"], out_name)
+                            try:
+                                success = deidentify_document(filepath, out_path, replacement_map)
+                                if success:
+                                    deidentified_doc_paths.append(out_path)
+                                    add_log(f"  ✓ {fname} → {out_name} (formatting preserved)")
+                                else:
+                                    add_log(f"  · {fname}: unsupported format, skipped")
+                            except Exception as e:
+                                add_log(f"  ✗ Error processing {fname}: {e}")
+                        else:
+                            add_log(f"  · {fname}: not PDF/DOCX, covered by JSON output")
                     
-                    for idx, event in enumerate(deidentified_chrono.get("chronology", [])):
-                        report_txt += f"Event #{idx + 1}\n"
-                        report_txt += f"Timestamp: {event.get('timestamp')}\n"
-                        report_txt += f"Category:  {event.get('category')}\n"
-                        report_txt += f"Speaker:   {event.get('speaker')}\n"
-                        report_txt += f"Details:   {event.get('event_details')}\n"
-                        report_txt += "-" * 80 + "\n\n"
-                        
-                    shareable_txt_path = os.path.join(dirs["output"], "shareable_pseudonymised_report.txt")
-                    with open(shareable_txt_path, "w", encoding="utf-8") as f:
-                        f.write(report_txt)
+                    # Stage 3.3: Generate synthesis summary and shareable reports
+                    add_log("[Stage 3.3] Generating synthesis summary and shareable reports...")
+                    
+                    synthesis_path = os.path.join(dirs["output"], "synthesis_summary.txt")
+                    synthesis_txt = write_synthesis_summary(
+                        synthesis_path, deidentified_chrono, identity_catalogue
+                    )
                         
                     shareable_json_path = os.path.join(dirs["output"], "shareable_pseudonymised_report.json")
                     save_json(deidentified_chrono, shareable_json_path)
@@ -341,7 +356,8 @@ with tab_deidentify:
                     add_log("[SYSTEM] PIPELINE RUN SUCCESSFULLY COMPLETED!")
                     st.success("Pipeline executed successfully! Scroll down to review and download outputs.")
                     st.session_state["pipeline_run"] = deidentified_chrono
-                    st.session_state["shareable_report_txt"] = report_txt
+                    st.session_state["synthesis_summary_txt"] = synthesis_txt
+                    st.session_state["deidentified_doc_paths"] = deidentified_doc_paths
                     
                 except Exception as e:
                     add_log(f"[ERROR] Pipeline aborted: {e}")
@@ -353,7 +369,8 @@ with tab_deidentify:
     # Display results if present
     if "pipeline_run" in st.session_state:
         deidentified_chrono = st.session_state["pipeline_run"]
-        report_txt = st.session_state["shareable_report_txt"]
+        synthesis_txt = st.session_state.get("synthesis_summary_txt", "")
+        deidentified_doc_paths = st.session_state.get("deidentified_doc_paths", [])
         
         st.markdown('<div class="glass-card">', unsafe_allow_html=True)
         st.subheader("📥 3. Download De-identified Reports")
@@ -361,20 +378,41 @@ with tab_deidentify:
         col1, col2 = st.columns(2)
         with col1:
             st.download_button(
-                label="📄 Download Shareable Text Report (.txt)",
-                data=report_txt,
-                file_name="shareable_pseudonymised_report.txt",
+                label="📋 Download Synthesis Summary (.txt)",
+                data=synthesis_txt,
+                file_name="synthesis_summary.txt",
                 mime="text/plain",
                 use_container_width=True
             )
         with col2:
             st.download_button(
-                label="json Download Shareable JSON Report (.json)",
+                label="📊 Download Shareable JSON Report (.json)",
                 data=json.dumps(deidentified_chrono, indent=2, ensure_ascii=False),
                 file_name="shareable_pseudonymised_report.json",
                 mime="application/json",
                 use_container_width=True
             )
+        
+        # Offer download buttons for each deidentified document
+        if deidentified_doc_paths:
+            st.markdown("---")
+            st.write("**📄 De-identified Documents (formatting preserved):**")
+            doc_cols = st.columns(min(len(deidentified_doc_paths), 3))
+            for idx, doc_path in enumerate(deidentified_doc_paths):
+                doc_name = os.path.basename(doc_path)
+                ext = os.path.splitext(doc_name)[1].lower()
+                mime = "application/pdf" if ext == ".pdf" else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                icon = "📕" if ext == ".pdf" else "📘"
+                with doc_cols[idx % len(doc_cols)]:
+                    with open(doc_path, "rb") as df:
+                        st.download_button(
+                            label=f"{icon} {doc_name}",
+                            data=df.read(),
+                            file_name=doc_name,
+                            mime=mime,
+                            use_container_width=True,
+                            key=f"download_doc_{idx}",
+                        )
         st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="glass-card">', unsafe_allow_html=True)
@@ -416,7 +454,11 @@ with tab_reidentify:
         "local `Identity Catalogue`, and restore the patient's original PII details."
     )
     
-    returned_file = st.file_uploader("Upload returned file (.txt or .json)", key="returned_file")
+    returned_file = st.file_uploader(
+        "Upload returned file (.txt, .json, .pdf, or .docx)",
+        key="returned_file",
+        type=["txt", "json", "pdf", "docx"],
+    )
     
     if returned_file:
         file_ext = os.path.splitext(returned_file.name)[1].lower()
@@ -426,20 +468,46 @@ with tab_reidentify:
             
         if st.button("🔓 Restore Original Identity Details", use_container_width=True):
             try:
-                reidentified_content = reidentify_report(temp_path)
+                is_document = file_ext in (".pdf", ".docx")
                 
-                st.success("Re-identification successful!")
-                
-                st.write("### 📄 Re-identified Clinical Record Preview")
-                st.text_area("Final Identified Report", value=reidentified_content, height=400)
-                
-                st.download_button(
-                    label="💾 Download Re-identified Final Report (.txt)",
-                    data=reidentified_content,
-                    file_name="final_identified_report.txt",
-                    mime="text/plain",
-                    use_container_width=True
-                )
+                if is_document:
+                    # Use document editor for format-preserved re-identification
+                    cat_path = os.path.join(dirs["secure"], "identity_catalogue.json")
+                    identity_catalogue = load_json(cat_path)
+                    if not identity_catalogue:
+                        st.error("Identity Catalogue not found. Run the de-identification pipeline first.")
+                    else:
+                        out_name = f"reidentified_{returned_file.name}"
+                        out_path = os.path.join(dirs["output"], out_name)
+                        reidentify_document(temp_path, out_path, identity_catalogue)
+                        
+                        st.success("Re-identification successful! Document formatting preserved.")
+                        
+                        mime = "application/pdf" if file_ext == ".pdf" else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        with open(out_path, "rb") as df:
+                            st.download_button(
+                                label=f"💾 Download Re-identified {file_ext.upper()} Report",
+                                data=df.read(),
+                                file_name=out_name,
+                                mime=mime,
+                                use_container_width=True,
+                            )
+                else:
+                    # Text/JSON re-identification (existing flow)
+                    reidentified_content = reidentify_report(temp_path)
+                    
+                    st.success("Re-identification successful!")
+                    
+                    st.write("### 📄 Re-identified Clinical Record Preview")
+                    st.text_area("Final Identified Report", value=reidentified_content, height=400)
+                    
+                    st.download_button(
+                        label="💾 Download Re-identified Final Report (.txt)",
+                        data=reidentified_content,
+                        file_name="final_identified_report.txt",
+                        mime="text/plain",
+                        use_container_width=True,
+                    )
                 
             except Exception as e:
                 st.error(f"Re-identification failed: {e}")

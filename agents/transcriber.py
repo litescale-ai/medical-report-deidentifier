@@ -18,14 +18,35 @@ class ExtractedTranscript(BaseModel):
     summary: str = Field(description="A brief high-level overview of this session/file")
     items: list[VerbatimItem] = Field(description="The detailed chronological verbatim transcription/extraction items")
 
+def _read_text_file(filepath: str) -> str:
+    """Read a plain-text file and return its contents as a string."""
+    with open(filepath, "r", encoding="utf-8") as f:
+        return f.read()
+
+def _read_docx_file(filepath: str) -> str:
+    """Extract text from a .docx file using python-docx."""
+    try:
+        import docx
+    except ImportError:
+        raise ImportError("python-docx is required to process .docx files. Install it with: pip install python-docx")
+    doc = docx.Document(filepath)
+    return "\n".join(p.text for p in doc.paragraphs)
+
+# Extensions that should be read as plain text strings (not passed to Document)
+_TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".rst", ".csv", ".tsv", ".json", ".log"}
+_DOCX_EXTENSIONS = {".docx", ".doc"}
+
 def load_media_file(filepath: str):
     """Loads a media file into the correct Antigravity media type."""
     ext = os.path.splitext(filepath)[1].lower()
     
-    # Handle simple text files directly as string
-    if ext == ".txt":
-        with open(filepath, "r", encoding="utf-8") as f:
-            return f.read()
+    # Handle text-readable files directly as string
+    if ext in _TEXT_EXTENSIONS:
+        return _read_text_file(filepath)
+    
+    # Handle Word documents by extracting text
+    if ext in _DOCX_EXTENSIONS:
+        return _read_docx_file(filepath)
             
     mime_type, _ = mimetypes.guess_type(filepath)
     if not mime_type:
@@ -46,10 +67,17 @@ def load_media_file(filepath: str):
         return Audio.from_file(filepath)
     elif mime_type.startswith("video/"):
         return Video.from_file(filepath)
-    elif mime_type == "application/pdf" or mime_type.startswith("text/"):
+    elif mime_type == "application/pdf":
         return Document.from_file(filepath)
+    elif mime_type.startswith("text/"):
+        # Read as plain text to avoid unsupported Document MIME types
+        return _read_text_file(filepath)
     else:
-        return Document.from_file(filepath)
+        # Last resort: try reading as text
+        try:
+            return _read_text_file(filepath)
+        except (UnicodeDecodeError, ValueError):
+            return Document.from_file(filepath)
 
 async def transcribe_media(filepath: str, api_key: str = None, backend: str = None, ollama_model: str = None) -> dict:
     """Uses the TranscriberAgent to extract verbatim text and descriptions from a media file."""

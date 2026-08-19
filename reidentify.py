@@ -2,16 +2,21 @@ import os
 import json
 import argparse
 from utils.helpers import load_json, get_data_dirs
+from utils.document_editor import reidentify_document
 
 def reidentify_report(pseudonymised_filepath: str, output_filepath: str = None) -> str:
     """Re-identifies a pseudonymised report using the secure Identity Catalogue.
     
+    Supports .txt, .json, .pdf, and .docx files.  For PDF and DOCX, the
+    document formatting is preserved by delegating to the document editor.
+    
     Args:
-        pseudonymised_filepath: Path to the deidentified/returned report (JSON or Text).
+        pseudonymised_filepath: Path to the deidentified/returned report.
         output_filepath: Path to save the re-identified report.
         
     Returns:
-        The content of the re-identified report.
+        The content of the re-identified report (text for txt/json,
+        output path string for pdf/docx).
     """
     dirs = get_data_dirs()
     catalogue_path = os.path.join(dirs["secure"], "identity_catalogue.json")
@@ -21,8 +26,20 @@ def reidentify_report(pseudonymised_filepath: str, output_filepath: str = None) 
         
     identity_catalogue = load_json(catalogue_path)
     
-    # Read the pseudonymised report
-    is_json = pseudonymised_filepath.endswith(".json")
+    # Determine file type
+    ext = os.path.splitext(pseudonymised_filepath)[1].lower()
+    
+    # --- PDF / DOCX: format-preserved re-identification ---
+    if ext in (".pdf", ".docx"):
+        if not output_filepath:
+            dirname, filename = os.path.split(pseudonymised_filepath)
+            output_filepath = os.path.join(dirname, f"reidentified_{filename}")
+        
+        reidentify_document(pseudonymised_filepath, output_filepath, identity_catalogue)
+        return output_filepath
+    
+    # --- Text / JSON: string-level re-identification ---
+    is_json = ext == ".json"
     
     if is_json:
         report_data = load_json(pseudonymised_filepath)
@@ -32,19 +49,16 @@ def reidentify_report(pseudonymised_filepath: str, output_filepath: str = None) 
             report_str = f.read()
             
     # Reverse replacement: replace hashes with canonical names
-    # Sort hashes by key length descending just in case, but they are all similar length
     for pseudonym_hash, details in identity_catalogue.items():
         real_name = details["canonical_name"]
-        # Replace hash with original canonical name
         report_str = report_str.replace(pseudonym_hash, real_name)
         
     # Clean up the recipient instruction banner if it was a text file
     instruction_banner_indicator = "CRITICAL RECIPIENT INSTRUCTIONS"
     if instruction_banner_indicator in report_str and not is_json:
-        # If it's a text report, we strip the instruction banner block to make it clean
         lines = report_str.split("\n")
         banner_end_idx = -1
-        for i, line in enumerate(lines[:30]): # look for banner end in first 30 lines
+        for i, line in enumerate(lines[:30]):
             if "================================================================================" in line and i > 5:
                 banner_end_idx = i
                 break

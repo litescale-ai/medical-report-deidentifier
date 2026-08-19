@@ -2,3 +2,5 @@ google-antigravity
 pydantic
 python-dotenv
 streamlit
+pymupdf
+python-docx

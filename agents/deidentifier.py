@@ -46,13 +46,14 @@ async def discover_pii_entities(chronology_data: dict, api_key: str = None, back
         data = await response.structured_output()
         return data.get("entities", [])
 
-def perform_deidentification(chronology_data: dict, discovered_entities: list[dict]) -> tuple[dict, dict]:
+def perform_deidentification(chronology_data: dict, discovered_entities: list[dict]) -> tuple[dict, dict, dict]:
     """Deterministically pseudonymises the chronological report.
     
     Returns:
         tuple containing:
         - The deidentified/pseudonymised report data dict
         - The secure identity catalogue mapping hash -> real details
+        - The replacement map (real PII string -> pseudonym hash), sorted by key length descending
     """
     identity_catalogue = {}
     replacement_map = {} # real_variation -> hash
@@ -100,4 +101,4 @@ def perform_deidentification(chronology_data: dict, discovered_entities: list[di
         chrono_str = chrono_str.replace(real_str, pseudonym)
         
     deidentified_data = json.loads(chrono_str)
-    return deidentified_data, identity_catalogue
+    return deidentified_data, identity_catalogue, replacement_map
