@@ -24,13 +24,49 @@ def _read_text_file(filepath: str) -> str:
         return f.read()
 
 def _read_docx_file(filepath: str) -> str:
-    """Extract text from a .docx file using python-docx."""
+    """Extract text from a .docx file using python-docx.
+
+    Falls back to raw XML tag-stripping if the DOCX has malformed internal
+    XML that python-docx (lxml) cannot parse.
+    """
     try:
         import docx
     except ImportError:
         raise ImportError("python-docx is required to process .docx files. Install it with: pip install python-docx")
-    doc = docx.Document(filepath)
-    return "\n".join(p.text for p in doc.paragraphs)
+
+    try:
+        doc = docx.Document(filepath)
+        paragraphs = [p.text for p in doc.paragraphs]
+        # Also extract text from tables
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    paragraphs.append(cell.text)
+        return "\n".join(paragraphs)
+    except Exception:
+        # Fallback: extract text from the raw XML inside the ZIP
+        return _read_docx_raw(filepath)
+
+
+def _read_docx_raw(filepath: str) -> str:
+    """Fallback text extraction for corrupted DOCX files.
+
+    Opens the DOCX as a ZIP archive and strips XML tags from
+    word/document.xml using regex, producing plain text.
+    """
+    import re
+    import zipfile
+
+    with zipfile.ZipFile(filepath) as z:
+        parts = []
+        for xml_name in ("word/document.xml", "word/header1.xml", "word/footer1.xml"):
+            if xml_name in z.namelist():
+                raw = z.read(xml_name).decode("utf-8", errors="replace")
+                clean = re.sub(r"<[^>]+>", " ", raw)
+                clean = re.sub(r"\s+", " ", clean).strip()
+                if clean:
+                    parts.append(clean)
+    return "\n\n".join(parts)
 
 # Extensions that should be read as plain text strings (not passed to Document)
 _TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".rst", ".csv", ".tsv", ".json", ".log"}
