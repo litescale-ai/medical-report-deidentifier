@@ -3,6 +3,7 @@
 # Uses Charmbracelet's `gum` for premium UI when available, ANSI fallback otherwise.
 
 set -euo pipefail
+trap 'echo ""; echo "  👋 Bye!"; exit 0' INT TERM
 
 # ─────────────────────────────────────────────
 # ANSI colour palette (zero-dependency fallback)
