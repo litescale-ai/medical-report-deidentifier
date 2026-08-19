@@ -16,28 +16,6 @@ from typing import Optional
 # PDF Editing (PyMuPDF)
 # ---------------------------------------------------------------------------
 
-def _extract_span_style(page, rect):
-    """Extract font metadata (name, size, colour) for text at the given rect.
-
-    Falls back to sensible defaults if extraction fails.
-    """
-    default_style = {"fontname": "helv", "size": 11.0, "color": (0, 0, 0)}
-
-    try:
-        blocks = page.get_text("dict", clip=rect)["blocks"]
-        for block in blocks:
-            for line in block.get("lines", []):
-                for span in line.get("spans", []):
-                    return {
-                        "fontname": span.get("font", "helv"),
-                        "size": span.get("size", 11.0),
-                        "color": _int_to_rgb(span.get("color", 0)),
-                    }
-    except Exception:
-        pass
-    return default_style
-
-
 def _int_to_rgb(color_int: int) -> tuple:
     """Convert an integer colour (0xRRGGBB) to a (r, g, b) float tuple."""
     if isinstance(color_int, (list, tuple)):
@@ -51,21 +29,141 @@ def _int_to_rgb(color_int: int) -> tuple:
 def _pymupdf_fontname_to_base(fontname: str) -> str:
     """Map a PDF-internal font name to a PyMuPDF base-14 font name.
 
-    PyMuPDF's insert_text only accepts base-14 font names (like 'helv',
-    'tiro', 'cour', etc.) or paths to font files.  We do a best-effort
-    mapping from the embedded font name.
+    PyMuPDF's insert_text only accepts base-14 font names.  We detect
+    bold and italic variants to preserve weight/style.
+
+    Base-14 families:
+      Helvetica:  helv, hebo (bold), heit (italic), hebi (bold-italic)
+      Times:      tiro, tibo (bold), tiit (italic), tibi (bold-italic)
+      Courier:    cour, cobo (bold), coit (italic), cobi (bold-italic)
     """
     fn = fontname.lower()
+
+    # Detect weight/style flags
+    is_bold = "bold" in fn or "black" in fn or "heavy" in fn
+    is_italic = "italic" in fn or "oblique" in fn
+
+    # Detect family
     if "courier" in fn or "mono" in fn:
+        if is_bold and is_italic:
+            return "cobi"
+        if is_bold:
+            return "cobo"
+        if is_italic:
+            return "coit"
         return "cour"
+
     if "times" in fn or "serif" in fn:
+        if is_bold and is_italic:
+            return "tibi"
+        if is_bold:
+            return "tibo"
+        if is_italic:
+            return "tiit"
         return "tiro"
+
     if "symbol" in fn:
         return "symb"
     if "zapf" in fn:
         return "zadb"
-    # Default to Helvetica (sans-serif)
+
+    # Default: Helvetica family
+    if is_bold and is_italic:
+        return "hebi"
+    if is_bold:
+        return "hebo"
+    if is_italic:
+        return "heit"
     return "helv"
+
+
+def _find_span_replacements(page, replacement_map: dict[str, str]) -> list[tuple]:
+    """Find all PII text in a page using span-aware matching.
+
+    Uses a hybrid strategy:
+    - For short spans (labels, values): requires the target to match nearly
+      the entire span text, preventing partial-label matches like "EasyPay"
+      inside "EasyPay No:".
+    - For longer spans (prose sentences): allows embedded matches with
+      word-boundary checks, using search_for() to get tight bounding rects.
+
+    Returns a list of (rect, original_text, replacement_text, style_dict,
+    is_full_span) for every match found.
+    """
+    import pymupdf
+
+    sorted_keys = sorted(replacement_map.keys(), key=len, reverse=True)
+    already_matched = set()  # (block_idx, line_idx, span_idx)
+    results = []
+
+    blocks = page.get_text("dict")["blocks"]
+
+    for bi, block in enumerate(blocks):
+        if block.get("type", 0) != 0:
+            continue
+        for li, line in enumerate(block.get("lines", [])):
+            for si, span in enumerate(line.get("spans", [])):
+                span_id = (bi, li, si)
+                if span_id in already_matched:
+                    continue
+
+                span_text = span["text"]
+                span_stripped = span_text.strip()
+                if not span_stripped:
+                    continue
+
+                style = {
+                    "fontname": span.get("font", "helv"),
+                    "size": span.get("size", 11.0),
+                    "color": _int_to_rgb(span.get("color", 0)),
+                    "flags": span.get("flags", 0),
+                }
+
+                for target in sorted_keys:
+                    if target not in span_text:
+                        continue
+
+                    remaining = span_stripped.replace(target, "", 1).strip()
+
+                    if not remaining:
+                        # Target matches the entire span — use span bbox
+                        bbox = pymupdf.Rect(span["bbox"])
+                        results.append((bbox, target, replacement_map[target],
+                                        style, True))
+                        already_matched.add(span_id)
+                        break  # full-span match — no other target can match
+
+                    # Check if remaining text is just punctuation/whitespace
+                    # (e.g. trailing comma, period) vs. a meaningful label
+                    # suffix like "No:" or " Ltd"
+                    import re
+                    remaining_words = re.findall(r'[a-zA-Z]{2,}', remaining)
+                    if remaining_words and len(remaining_words) <= 2:
+                        # Remaining text has 1-2 real words — likely a label
+                        # like "EasyPay No:" where "EasyPay" is part of the
+                        # label, not a standalone entity.
+                        continue
+
+                    # Either remaining text is just punctuation (use span bbox)
+                    # or it's prose with 3+ words (use search_for for tight rects)
+                    if not remaining_words:
+                        # Only punctuation/symbols remain — treat as full match
+                        bbox = pymupdf.Rect(span["bbox"])
+                        results.append((bbox, target, replacement_map[target],
+                                        style, True))
+                        already_matched.add(span_id)
+                        break
+
+                    # Prose span — use search_for() for tight rects.
+                    # DON'T break — continue to find other targets in the
+                    # same span (e.g. both "John Doe" and "Dr. Jane Smith").
+                    span_rect = pymupdf.Rect(span["bbox"])
+                    search_rects = page.search_for(target, clip=span_rect)
+                    for sr in search_rects:
+                        results.append((sr, target, replacement_map[target],
+                                        style, False))
+
+    return results
 
 
 def deidentify_pdf(
@@ -75,10 +173,8 @@ def deidentify_pdf(
 ) -> bool:
     """Replace PII strings in a PDF with pseudonym hashes, preserving layout.
 
-    Uses a two-phase approach for maximum reliability:
-      Phase 1 — Collect all target rects and their font metadata
-      Phase 2 — Redact all targets (erase original text)
-      Phase 3 — Insert replacement text at the original positions
+    Uses span-level text matching to avoid partial-word matches, and a
+    two-phase redact-then-insert approach for reliable text replacement.
 
     Args:
         input_path: Path to the original PDF.
@@ -92,38 +188,25 @@ def deidentify_pdf(
 
     doc = pymupdf.open(input_path)
 
-    # Sort replacements by length descending to prevent partial matches
-    sorted_keys = sorted(replacement_map.keys(), key=len, reverse=True)
-
     for page in doc:
-        # Phase 1: Collect all replacement targets and their styles
-        replacements = []  # list of (rect, replacement_text, style)
+        # Phase 1: Find all matches at the span level with precise styles
+        matches = _find_span_replacements(page, replacement_map)
 
-        for real_text in sorted_keys:
-            if not real_text.strip():
-                continue
-            replacement = replacement_map[real_text]
-            instances = page.search_for(real_text)
-            for rect in instances:
-                style = _extract_span_style(page, rect)
-                replacements.append((rect, replacement, style))
-
-        if not replacements:
+        if not matches:
             continue
 
-        # Phase 2: Redact all targets (plain redaction, no text parameter)
-        for rect, _, _ in replacements:
+        # Phase 2: Redact all matched regions
+        for rect, _, _, _, _ in matches:
             page.add_redact_annot(rect, fill=(1, 1, 1))
         page.apply_redactions()
 
         # Phase 3: Insert replacement text at original positions
-        for rect, replacement, style in replacements:
+        for rect, _, replacement, style, _ in matches:
             base_font = _pymupdf_fontname_to_base(style["fontname"])
             fontsize = style["size"]
             color = style["color"]
 
-            # insert_text uses the baseline point (bottom-left of text),
-            # so use rect.y1 offset slightly upward for proper alignment
+            # insert_text uses the baseline point; offset from bottom of bbox
             insert_point = pymupdf.Point(rect.x0, rect.y1 - 1)
             page.insert_text(
                 insert_point,
