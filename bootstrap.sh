@@ -326,7 +326,7 @@ section "📚 Step 3 — Dependencies"
 
 step 3 "Installing Python packages..."
 spin "Upgrading pip..." pip install -q --upgrade pip
-spin "Installing requirements..." pip install -q -r requirements.txt
+spin "Installing/updating requirements..." pip install -q --upgrade -r requirements.txt
 success "All dependencies installed"
 
 # ─────────────────────────────────────────────
