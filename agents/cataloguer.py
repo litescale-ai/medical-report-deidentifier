@@ -15,7 +15,7 @@ class UnifiedChronology(BaseModel):
     categories_found: list[str] = Field(description="List of categories identified across all sources")
     chronology: list[CatalogueEvent] = Field(description="The unified timeline of all events across all sessions, ordered chronologically")
 
-async def catalogue_transcripts(transcripts: list[dict], api_key: str = None, backend: str = None, ollama_model: str = None) -> dict:
+async def catalogue_transcripts(transcripts: list[dict], api_key: str = None, backend: str = None, gemini_model: str = None, ollama_model: str = None) -> dict:
     """Uses the CataloguerAgent to compile multiple verbatim extractions into a unified chronological catalogue."""
     
     system_instructions = (
@@ -33,6 +33,7 @@ async def catalogue_transcripts(transcripts: list[dict], api_key: str = None, ba
         response_schema=UnifiedChronology,
         backend=backend,
         api_key=api_key,
+        gemini_model=gemini_model,
         ollama_model=ollama_model,
     )
     

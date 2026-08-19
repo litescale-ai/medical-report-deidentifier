@@ -77,93 +77,41 @@ def _pymupdf_fontname_to_base(fontname: str) -> str:
     return "helv"
 
 
-def _find_span_replacements(page, replacement_map: dict[str, str]) -> list[tuple]:
-    """Find all PII text in a page using span-aware matching.
-
-    Uses a hybrid strategy:
-    - For short spans (labels, values): requires the target to match nearly
-      the entire span text, preventing partial-label matches like "EasyPay"
-      inside "EasyPay No:".
-    - For longer spans (prose sentences): allows embedded matches with
-      word-boundary checks, using search_for() to get tight bounding rects.
-
-    Returns a list of (rect, original_text, replacement_text, style_dict,
-    is_full_span) for every match found.
-    """
+def _extract_span_style(page, search_rect) -> dict:
+    """Find the best text style (font, size, color) that intersects with the given search rectangle."""
     import pymupdf
-
-    sorted_keys = sorted(replacement_map.keys(), key=len, reverse=True)
-    already_matched = set()  # (block_idx, line_idx, span_idx)
-    results = []
-
     blocks = page.get_text("dict")["blocks"]
-
-    for bi, block in enumerate(blocks):
-        if block.get("type", 0) != 0:
+    
+    best_span = None
+    max_area = 0
+    
+    for b in blocks:
+        if b.get("type", 0) != 0:
             continue
-        for li, line in enumerate(block.get("lines", [])):
-            for si, span in enumerate(line.get("spans", [])):
-                span_id = (bi, li, si)
-                if span_id in already_matched:
-                    continue
-
-                span_text = span["text"]
-                span_stripped = span_text.strip()
-                if not span_stripped:
-                    continue
-
-                style = {
-                    "fontname": span.get("font", "helv"),
-                    "size": span.get("size", 11.0),
-                    "color": _int_to_rgb(span.get("color", 0)),
-                    "flags": span.get("flags", 0),
-                }
-
-                for target in sorted_keys:
-                    if target not in span_text:
-                        continue
-
-                    remaining = span_stripped.replace(target, "", 1).strip()
-
-                    if not remaining:
-                        # Target matches the entire span — use span bbox
-                        bbox = pymupdf.Rect(span["bbox"])
-                        results.append((bbox, target, replacement_map[target],
-                                        style, True))
-                        already_matched.add(span_id)
-                        break  # full-span match — no other target can match
-
-                    # Check if remaining text is just punctuation/whitespace
-                    # (e.g. trailing comma, period) vs. a meaningful label
-                    # suffix like "No:" or " Ltd"
-                    import re
-                    remaining_words = re.findall(r'[a-zA-Z]{2,}', remaining)
-                    if remaining_words and len(remaining_words) <= 2:
-                        # Remaining text has 1-2 real words — likely a label
-                        # like "EasyPay No:" where "EasyPay" is part of the
-                        # label, not a standalone entity.
-                        continue
-
-                    # Either remaining text is just punctuation (use span bbox)
-                    # or it's prose with 3+ words (use search_for for tight rects)
-                    if not remaining_words:
-                        # Only punctuation/symbols remain — treat as full match
-                        bbox = pymupdf.Rect(span["bbox"])
-                        results.append((bbox, target, replacement_map[target],
-                                        style, True))
-                        already_matched.add(span_id)
-                        break
-
-                    # Prose span — use search_for() for tight rects.
-                    # DON'T break — continue to find other targets in the
-                    # same span (e.g. both "John Doe" and "Dr. Jane Smith").
-                    span_rect = pymupdf.Rect(span["bbox"])
-                    search_rects = page.search_for(target, clip=span_rect)
-                    for sr in search_rects:
-                        results.append((sr, target, replacement_map[target],
-                                        style, False))
-
-    return results
+        for l in b.get("lines", []):
+            for s in l.get("spans", []):
+                span_rect = pymupdf.Rect(s["bbox"])
+                intersect = span_rect.intersect(search_rect)
+                area = intersect.get_area()
+                if area > max_area:
+                    max_area = area
+                    best_span = s
+                    
+    if best_span:
+        return {
+            "fontname": best_span.get("font", "helv"),
+            "size": best_span.get("size", 11.0),
+            "color": _int_to_rgb(best_span.get("color", 0)),
+            "flags": best_span.get("flags", 0),
+        }
+        
+    # Fallback default
+    return {
+        "fontname": "helv",
+        "size": 11.0,
+        "color": (0, 0, 0),
+        "flags": 0,
+    }
 
 
 def deidentify_pdf(
@@ -187,21 +135,33 @@ def deidentify_pdf(
     import pymupdf
 
     doc = pymupdf.open(input_path)
+    total_replacements = 0
+    
+    sorted_keys = sorted(replacement_map.keys(), key=len, reverse=True)
 
     for page in doc:
-        # Phase 1: Find all matches at the span level with precise styles
-        matches = _find_span_replacements(page, replacement_map)
+        # Phase 1: Collect all replacements using search_for for robust cross-span matching
+        replacements = []
+        for target in sorted_keys:
+            if not target.strip():
+                continue
+            rects = page.search_for(target)
+            for rect in rects:
+                style = _extract_span_style(page, rect)
+                replacements.append((rect, replacement_map[target], style))
 
-        if not matches:
+        if not replacements:
             continue
 
+        total_replacements += len(replacements)
+
         # Phase 2: Redact all matched regions
-        for rect, _, _, _, _ in matches:
+        for rect, _, _ in replacements:
             page.add_redact_annot(rect, fill=(1, 1, 1))
         page.apply_redactions()
 
         # Phase 3: Insert replacement text at original positions
-        for rect, _, replacement, style, _ in matches:
+        for rect, replacement, style in replacements:
             base_font = _pymupdf_fontname_to_base(style["fontname"])
             fontsize = style["size"]
             color = style["color"]
@@ -218,14 +178,14 @@ def deidentify_pdf(
 
     doc.save(output_path)
     doc.close()
-    return True
+    return total_replacements > 0
 
 
 # ---------------------------------------------------------------------------
 # DOCX Editing (python-docx)
 # ---------------------------------------------------------------------------
 
-def _replace_in_runs(paragraph, replacement_map: dict[str, str]):
+def _replace_in_runs(paragraph, replacement_map: dict[str, str]) -> int:
     """Replace PII text in a paragraph's runs, preserving per-run formatting.
 
     Handles the common case where a PII string is contained within a single
@@ -233,12 +193,14 @@ def _replace_in_runs(paragraph, replacement_map: dict[str, str]):
     strategy that preserves the formatting of the first matching run.
     """
     sorted_keys = sorted(replacement_map.keys(), key=len, reverse=True)
+    replacements_made = 0
 
     # First pass: simple per-run replacement
     for run in paragraph.runs:
         for real_text in sorted_keys:
             if real_text in run.text:
                 run.text = run.text.replace(real_text, replacement_map[real_text])
+                replacements_made += 1
 
     # Second pass: handle cross-run splits
     full_text = paragraph.text
@@ -252,17 +214,21 @@ def _replace_in_runs(paragraph, replacement_map: dict[str, str]):
             continue
 
         # Cross-run replacement: find the runs that span this text
-        _replace_across_runs(paragraph, real_text, replacement_map[real_text])
+        if _replace_across_runs(paragraph, real_text, replacement_map[real_text]):
+            replacements_made += 1
+            
+    return replacements_made
 
 
-def _replace_across_runs(paragraph, target: str, replacement: str):
+def _replace_across_runs(paragraph, target: str, replacement: str) -> bool:
     """Replace text that spans multiple runs in a paragraph.
 
     Keeps the formatting of the first run that contains part of the target.
+    Returns True if replaced.
     """
     runs = paragraph.runs
     if not runs:
-        return
+        return False
 
     # Build a character-to-run mapping
     char_positions = []  # list of (run_index, char_index_in_run)
@@ -273,7 +239,7 @@ def _replace_across_runs(paragraph, target: str, replacement: str):
     full_text = "".join(r.text for r in runs)
     start_idx = full_text.find(target)
     if start_idx == -1:
-        return
+        return False
 
     end_idx = start_idx + len(target)
 
@@ -291,12 +257,16 @@ def _replace_across_runs(paragraph, target: str, replacement: str):
     # Clear intermediate and end runs (if different from start)
     for ri in range(start_run + 1, end_run + 1):
         runs[ri].text = ""
+        
+    return True
 
 
-def _process_paragraphs(paragraphs, replacement_map: dict[str, str]):
-    """Apply replacements to a list of paragraphs."""
+def _process_paragraphs(paragraphs, replacement_map: dict[str, str]) -> int:
+    """Apply replacements to a list of paragraphs. Returns number of replacements made."""
+    count = 0
     for paragraph in paragraphs:
-        _replace_in_runs(paragraph, replacement_map)
+        count += _replace_in_runs(paragraph, replacement_map)
+    return count
 
 
 def deidentify_docx(

@@ -157,6 +157,14 @@ if run_mode.startswith("🌟"):
         type="password",
         help="Paste your Gemini API key here, or set GEMINI_API_KEY in your environment."
     )
+    
+    gemini_model_input = st.sidebar.selectbox(
+        "Gemini Model",
+        ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-2.5-pro", "gemini-1.5-pro"],
+        index=0,
+        help="Select the Gemini model to use for transcription and de-identification."
+    )
+
     if st.sidebar.button("Save Credentials"):
         save_api_key(api_key_input)
         st.session_state.setdefault("_manually_saved", []).append("GEMINI_API_KEY")
@@ -167,6 +175,7 @@ if run_mode.startswith("🌟"):
         help="Opens Google AI Studio where you can create an API key in seconds."
     )
     st.session_state["_backend"] = "gemini"
+    st.session_state["_gemini_model"] = gemini_model_input
 
 # --- Ollama local settings ---
 elif run_mode.startswith("🏠"):
@@ -272,9 +281,11 @@ with tab_deidentify:
                         await asyncio.sleep(0.5)
                     else:
                         _ollama_model = st.session_state.get("_ollama_model")
+                        _gemini_model = st.session_state.get("_gemini_model")
                         _agent_kwargs = dict(
                             backend=_backend,
                             api_key=os.getenv("GEMINI_API_KEY") if _backend == "gemini" else None,
+                            gemini_model=_gemini_model if _backend == "gemini" else None,
                             ollama_model=_ollama_model if _backend == "ollama" else None,
                         )
                         add_log(f"[SYSTEM] Starting pipeline via {_backend.upper()} backend...")
@@ -336,7 +347,7 @@ with tab_deidentify:
                                     deidentified_doc_paths.append(out_path)
                                     add_log(f"  ✓ {fname} → {out_name} (formatting preserved)")
                                 else:
-                                    add_log(f"  · {fname}: unsupported format, skipped")
+                                    add_log(f"  · {fname}: unsearchable text/scanned document, skipped in-place redaction")
                             except Exception as e:
                                 add_log(f"  ✗ Error processing {fname}: {e}")
                         else:

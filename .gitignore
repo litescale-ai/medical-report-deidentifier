@@ -22,3 +22,8 @@ data/secure/*
 .DS_Store
 .vscode/
 .idea/
+node_modules/
+build/medical_deidentifier/
+dist/
+src-tauri/medical_deidentifier_backend-*
+test_pdf*

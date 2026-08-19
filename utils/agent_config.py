@@ -21,6 +21,7 @@ def build_agent_config(
     response_schema: dict | type[BaseModel] | None = None,
     backend: str | None = None,
     api_key: str | None = None,
+    gemini_model: str | None = None,
     ollama_model: str | None = None,
     ollama_base_url: str | None = None,
 ) -> LocalAgentConfig | LocalOpenAIAgentConfig:
@@ -50,7 +51,10 @@ def build_agent_config(
         )
 
     # Default: Gemini API
+    # 503 errors often mean the default model (e.g. gemini-exp) is overloaded.
+    # Set explicitly via GEMINI_MODEL or default to a stable model.
     return LocalAgentConfig(
+        model=gemini_model or os.getenv("GEMINI_MODEL", "gemini-3.7-flash"),
         api_key=api_key,
         **shared_kwargs,
     )

@@ -14,7 +14,7 @@ class IdentifiedEntity(BaseModel):
 class EntityDiscoveryResult(BaseModel):
     entities: list[IdentifiedEntity] = Field(description="List of all personal identifiable entities found in the text")
 
-async def discover_pii_entities(chronology_data: dict, api_key: str = None, backend: str = None, ollama_model: str = None) -> list[dict]:
+async def discover_pii_entities(chronology_data: dict, api_key: str = None, backend: str = None, gemini_model: str = None, ollama_model: str = None) -> list[dict]:
     """Uses DeidentifierAgent to discover all PII entities, relationships, and name variations."""
     
     system_instructions = (
@@ -32,6 +32,7 @@ async def discover_pii_entities(chronology_data: dict, api_key: str = None, back
         response_schema=EntityDiscoveryResult,
         backend=backend,
         api_key=api_key,
+        gemini_model=gemini_model,
         ollama_model=ollama_model,
     )
     

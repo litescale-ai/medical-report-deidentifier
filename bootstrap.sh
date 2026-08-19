@@ -277,9 +277,13 @@ if [ ! -d "medical-report-deidentifier" ] && [ ! -f "app.py" ]; then
     success "Repository cloned"
 elif [ -d "medical-report-deidentifier" ]; then
     cd medical-report-deidentifier
-    success "Repository already present"
+    step 1 "Updating repository..."
+    spin "Pulling latest changes..." git pull --quiet
+    success "Repository updated"
 else
-    success "Already inside project directory"
+    step 1 "Updating repository..."
+    spin "Pulling latest changes..." git pull --quiet
+    success "Repository updated"
 fi
 
 # ─────────────────────────────────────────────

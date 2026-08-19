@@ -115,7 +115,7 @@ def load_media_file(filepath: str):
         except (UnicodeDecodeError, ValueError):
             return Document.from_file(filepath)
 
-async def transcribe_media(filepath: str, api_key: str = None, backend: str = None, ollama_model: str = None) -> dict:
+async def transcribe_media(filepath: str, api_key: str = None, backend: str = None, gemini_model: str = None, ollama_model: str = None) -> dict:
     """Uses the TranscriberAgent to extract verbatim text and descriptions from a media file."""
     filename = os.path.basename(filepath)
     media = load_media_file(filepath)
@@ -136,6 +136,7 @@ async def transcribe_media(filepath: str, api_key: str = None, backend: str = No
         response_schema=ExtractedTranscript,
         backend=backend,
         api_key=api_key,
+        gemini_model=gemini_model,
         ollama_model=ollama_model,
     )
     
