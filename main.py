@@ -35,8 +35,11 @@ async def run_pipeline():
     # 1. Load environment variables
     load_dotenv()
     api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
+    backend = os.getenv("AGENT_BACKEND", "gemini").lower().strip()
+    ollama_model = os.getenv("OLLAMA_MODEL")
+    if backend == "gemini" and not api_key:
         print("Error: GEMINI_API_KEY environment variable not found in .env file.")
+        print("Set AGENT_BACKEND=ollama to use a local Ollama model instead.")
         sys.exit(1)
         
     dirs = get_data_dirs()
@@ -54,7 +57,13 @@ async def run_pipeline():
         print(f"No input files found in {input_dir}. Please place raw medical data there.")
         return
         
-    print(f"Found {len(input_files)} input file(s) to process.")
+    print(f"Found {len(input_files)} input file(s) to process. Backend: {backend.upper()}")
+    
+    _agent_kwargs = dict(
+        backend=backend,
+        api_key=api_key if backend == "gemini" else None,
+        ollama_model=ollama_model if backend == "ollama" else None,
+    )
     
     # 3. Stage 1: Multimodal Verbatim Extraction & Transcription
     transcripts = []
@@ -62,7 +71,7 @@ async def run_pipeline():
         filename = os.path.basename(filepath)
         print(f"--- Stage 1: Transcribing and extracting {filename} ---")
         try:
-            transcript = await transcribe_media(filepath, api_key=api_key)
+            transcript = await transcribe_media(filepath, **_agent_kwargs)
             transcripts.append(transcript)
             # Save intermediate secure verbatim transcript
             verbatim_path = os.path.join(secure_dir, f"verbatim_{os.path.splitext(filename)[0]}.json")
@@ -78,7 +87,7 @@ async def run_pipeline():
     # 4. Stage 2: Chronological Cataloguing
     print("\n--- Stage 2: Compiling unified chronological catalogue ---")
     try:
-        unified_chronology = await catalogue_transcripts(transcripts, api_key=api_key)
+        unified_chronology = await catalogue_transcripts(transcripts, **_agent_kwargs)
         chrono_path = os.path.join(secure_dir, "unified_chronology.json")
         save_json(unified_chronology, chrono_path)
         print(f"Unified chronological catalogue compiled and saved securely to {chrono_path}")
@@ -89,7 +98,7 @@ async def run_pipeline():
     # 5. Stage 3.1 & 3.2: PII Discovery and Deterministic Pseudonymisation
     print("\n--- Stage 3: Discovering PII Named Entities and Hashing ---")
     try:
-        discovered_entities = await discover_pii_entities(unified_chronology, api_key=api_key)
+        discovered_entities = await discover_pii_entities(unified_chronology, **_agent_kwargs)
         
         # Save discovered entities for reference
         entities_path = os.path.join(secure_dir, "discovered_entities.json")

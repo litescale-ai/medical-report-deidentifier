@@ -1,6 +1,8 @@
 import json
 from pydantic import BaseModel, Field
-from google.antigravity import Agent, LocalAgentConfig
+# pyrefly: ignore [missing-import]
+from google.antigravity import Agent
+from utils.agent_config import build_agent_config
 from utils.hashing import generate_pseudonym_hash
 
 class IdentifiedEntity(BaseModel):
@@ -12,7 +14,7 @@ class IdentifiedEntity(BaseModel):
 class EntityDiscoveryResult(BaseModel):
     entities: list[IdentifiedEntity] = Field(description="List of all personal identifiable entities found in the text")
 
-async def discover_pii_entities(chronology_data: dict, api_key: str = None) -> list[dict]:
+async def discover_pii_entities(chronology_data: dict, api_key: str = None, backend: str = None, ollama_model: str = None) -> list[dict]:
     """Uses DeidentifierAgent to discover all PII entities, relationships, and name variations."""
     
     system_instructions = (
@@ -25,10 +27,12 @@ async def discover_pii_entities(chronology_data: dict, api_key: str = None) -> l
         "4. Critical: List all variations/forms/aliases of their name that appear in the text (e.g., full name, first name, last name with title, initials) so they can be replaced deterministically."
     )
     
-    config = LocalAgentConfig(
-        api_key=api_key,
+    config = build_agent_config(
         system_instructions=system_instructions,
-        response_schema=EntityDiscoveryResult
+        response_schema=EntityDiscoveryResult,
+        backend=backend,
+        api_key=api_key,
+        ollama_model=ollama_model,
     )
     
     prompt = (

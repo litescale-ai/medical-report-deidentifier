@@ -1,6 +1,7 @@
 import json
 from pydantic import BaseModel, Field
-from google.antigravity import Agent, LocalAgentConfig
+from google.antigravity import Agent
+from utils.agent_config import build_agent_config
 
 class CatalogueEvent(BaseModel):
     timestamp: str = Field(description="Normalized timestamp or date/time of the event (e.g., '2026-05-27 10:00:00', 'Intake Day', or 'Session 1 - 00:05:12')")
@@ -14,7 +15,7 @@ class UnifiedChronology(BaseModel):
     categories_found: list[str] = Field(description="List of categories identified across all sources")
     chronology: list[CatalogueEvent] = Field(description="The unified timeline of all events across all sessions, ordered chronologically")
 
-async def catalogue_transcripts(transcripts: list[dict], api_key: str = None) -> dict:
+async def catalogue_transcripts(transcripts: list[dict], api_key: str = None, backend: str = None, ollama_model: str = None) -> dict:
     """Uses the CataloguerAgent to compile multiple verbatim extractions into a unified chronological catalogue."""
     
     system_instructions = (
@@ -27,10 +28,12 @@ async def catalogue_transcripts(transcripts: list[dict], api_key: str = None) ->
         "4. Include references to the original source files for auditability."
     )
     
-    config = LocalAgentConfig(
-        api_key=api_key,
+    config = build_agent_config(
         system_instructions=system_instructions,
-        response_schema=UnifiedChronology
+        response_schema=UnifiedChronology,
+        backend=backend,
+        api_key=api_key,
+        ollama_model=ollama_model,
     )
     
     # Format transcripts to feed into the prompt
@@ -45,3 +48,4 @@ async def catalogue_transcripts(transcripts: list[dict], api_key: str = None) ->
         response = await agent.chat(prompt)
         data = await response.structured_output()
         return data
+

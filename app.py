@@ -136,17 +136,66 @@ st.markdown("""
 
 # Sidebar Config
 st.sidebar.markdown("### ⚙️ Pipeline Configuration")
-api_key_input = st.sidebar.text_input("Gemini API Key", value=os.getenv("GEMINI_API_KEY", ""), type="password")
-if st.sidebar.button("Save Credentials"):
-    save_api_key(api_key_input)
-    st.sidebar.success("Credentials saved!")
 
-run_mode = st.sidebar.radio("Execution Mode", ["🌟 Live SDK Mode", "🧪 Mock/Dry-Run Mode (No API needed)"])
-st.sidebar.info(
-    "💡 **Mock Mode** simulates the Gemini agents using pre-compiled high-fidelity transcripts, "
-    "allowing you to fully test the de-identification, salt-based hashing, and re-identification "
-    "without burning API quota or triggering quota limits."
+run_mode = st.sidebar.radio(
+    "Execution Mode",
+    ["🌟 Gemini API (Cloud)", "🏠 Local Ollama (Gemma 4)", "🧪 Mock/Dry-Run (No model needed)"],
+    help="Choose where inference runs: Google's API, a local Ollama server, or a mock demo."
 )
+
+# --- Gemini API settings ---
+if run_mode.startswith("🌟"):
+    env_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+    if env_key and "GEMINI_API_KEY" not in st.session_state.get("_manually_saved", []):
+        st.sidebar.success("✅ API key auto-detected from environment")
+
+    api_key_input = st.sidebar.text_input(
+        "Gemini API Key",
+        value=env_key,
+        type="password",
+        help="Paste your Gemini API key here, or set GEMINI_API_KEY in your environment."
+    )
+    if st.sidebar.button("Save Credentials"):
+        save_api_key(api_key_input)
+        st.session_state.setdefault("_manually_saved", []).append("GEMINI_API_KEY")
+        st.sidebar.success("Credentials saved!")
+
+    st.sidebar.markdown(
+        "🔑 [Get a free Gemini API key →](https://aistudio.google.com/apikey)",
+        help="Opens Google AI Studio where you can create an API key in seconds."
+    )
+    st.session_state["_backend"] = "gemini"
+
+# --- Ollama local settings ---
+elif run_mode.startswith("🏠"):
+    ollama_model = st.sidebar.selectbox(
+        "Ollama Model",
+        ["gemma4:12b", "gemma4:4b", "gemma4:27b"],
+        index=0,
+        help="Select the Gemma 4 model variant pulled in Ollama."
+    )
+    ollama_url = st.sidebar.text_input(
+        "Ollama Server URL",
+        value="http://localhost:11434/v1",
+        help="Default Ollama endpoint. Change only if running on a remote host."
+    )
+    st.sidebar.info(
+        "💡 **Setup:** Install Ollama and pull Gemma 4:\n"
+        "```\nbrew install ollama\nollama pull gemma4:12b\n```"
+    )
+    st.session_state["_backend"] = "ollama"
+    st.session_state["_ollama_model"] = ollama_model
+    st.session_state["_ollama_url"] = ollama_url
+    api_key_input = None
+
+# --- Mock mode ---
+else:
+    st.sidebar.info(
+        "💡 **Mock Mode** simulates the pipeline using pre-compiled data, "
+        "allowing you to test de-identification without any API or model."
+    )
+    st.session_state["_backend"] = "mock"
+    api_key_input = None
 
 # Tabs
 tab_deidentify, tab_reidentify, tab_catalogue = st.tabs([
@@ -183,9 +232,11 @@ with tab_deidentify:
     st.subheader("2. Run De-identification Pipeline")
     
     if st.button("🚀 Execute Pipeline", use_container_width=True):
-        if not uploaded_files and run_mode == "🌟 Live SDK Mode":
+        _backend = st.session_state.get("_backend", "mock")
+        _is_live = _backend in ("gemini", "ollama")
+        if not uploaded_files and _is_live:
             st.error("Please upload at least one raw medical record file before processing.")
-        elif not os.getenv("GEMINI_API_KEY") and run_mode == "🌟 Live SDK Mode":
+        elif not os.getenv("GEMINI_API_KEY") and _backend == "gemini":
             st.error("API Key not set. Please configure it in the sidebar settings.")
         else:
             log_container = st.empty()
@@ -200,7 +251,7 @@ with tab_deidentify:
 
             async def execute():
                 try:
-                    if run_mode == "🧪 Mock/Dry-Run Mode (No API needed)":
+                    if _backend == "mock":
                         add_log("[SYSTEM] Starting pipeline in Mock/Dry-Run Mode...")
                         add_log("[Stage 1] Ingesting files...")
                         add_log("  - Found mock file: intake_form.txt")
@@ -218,7 +269,13 @@ with tab_deidentify:
                         discovered_entities = MOCK_DISCOVERED_ENTITIES
                         await asyncio.sleep(0.5)
                     else:
-                        add_log("[SYSTEM] Starting live Antigravity pipeline...")
+                        _ollama_model = st.session_state.get("_ollama_model")
+                        _agent_kwargs = dict(
+                            backend=_backend,
+                            api_key=os.getenv("GEMINI_API_KEY") if _backend == "gemini" else None,
+                            ollama_model=_ollama_model if _backend == "ollama" else None,
+                        )
+                        add_log(f"[SYSTEM] Starting pipeline via {_backend.upper()} backend...")
                         input_files = [
                             os.path.join(dirs["input"], f.name) for f in uploaded_files
                         ]
@@ -228,7 +285,7 @@ with tab_deidentify:
                         for filepath in input_files:
                             fname = os.path.basename(filepath)
                             add_log(f"[Stage 1] Running TranscriberAgent on '{fname}'...")
-                            transcript = await transcribe_media(filepath, api_key=os.getenv("GEMINI_API_KEY"))
+                            transcript = await transcribe_media(filepath, **_agent_kwargs)
                             transcripts.append(transcript)
                             # Save securely
                             save_json(transcript, os.path.join(dirs["secure"], f"verbatim_{os.path.splitext(fname)[0]}.json"))
@@ -236,13 +293,13 @@ with tab_deidentify:
                         
                         # Live Stage 2: Cataloguing
                         add_log("[Stage 2] Running CataloguerAgent to unify timelines...")
-                        unified_chronology = await catalogue_transcripts(transcripts, api_key=os.getenv("GEMINI_API_KEY"))
+                        unified_chronology = await catalogue_transcripts(transcripts, **_agent_kwargs)
                         save_json(unified_chronology, os.path.join(dirs["secure"], "unified_chronology.json"))
                         add_log("  - Chronological ledger compiled and stored securely.")
                         
                         # Live Stage 3.1: PII Discovery
                         add_log("[Stage 3.1] Running DeidentifierAgent to discover sensitive entities...")
-                        discovered_entities = await discover_pii_entities(unified_chronology, api_key=os.getenv("GEMINI_API_KEY"))
+                        discovered_entities = await discover_pii_entities(unified_chronology, **_agent_kwargs)
                         save_json(discovered_entities, os.path.join(dirs["secure"], "discovered_entities.json"))
                     
                     # Stage 3.2: Deterministic replacement (Runs same python code for both modes!)

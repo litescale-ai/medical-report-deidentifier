@@ -2,8 +2,9 @@ import os
 import mimetypes
 import pathlib
 from pydantic import BaseModel, Field
-from google.antigravity import Agent, LocalAgentConfig
+from google.antigravity import Agent
 from google.antigravity.types import Document, Image, Audio, Video
+from utils.agent_config import build_agent_config
 
 class VerbatimItem(BaseModel):
     timestamp_start: str = Field(description="The timestamp of the dialogue or activity start (e.g. '00:00:15' or 'page 1')")
@@ -50,7 +51,7 @@ def load_media_file(filepath: str):
     else:
         return Document.from_file(filepath)
 
-async def transcribe_media(filepath: str, api_key: str = None) -> dict:
+async def transcribe_media(filepath: str, api_key: str = None, backend: str = None, ollama_model: str = None) -> dict:
     """Uses the TranscriberAgent to extract verbatim text and descriptions from a media file."""
     filename = os.path.basename(filepath)
     media = load_media_file(filepath)
@@ -66,10 +67,12 @@ async def transcribe_media(filepath: str, api_key: str = None) -> dict:
         "describing the patient's behaviors, movements, or physical state in detail."
     )
     
-    config = LocalAgentConfig(
-        api_key=api_key,
+    config = build_agent_config(
         system_instructions=system_instructions,
-        response_schema=ExtractedTranscript
+        response_schema=ExtractedTranscript,
+        backend=backend,
+        api_key=api_key,
+        ollama_model=ollama_model,
     )
     
     prompt = (
@@ -88,3 +91,4 @@ async def transcribe_media(filepath: str, api_key: str = None) -> dict:
             
         data = await response.structured_output()
         return data
+
