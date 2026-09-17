@@ -1,8 +1,6 @@
 import json
 from pydantic import BaseModel, Field
-# pyrefly: ignore [missing-import]
-from google.antigravity import Agent
-from utils.agent_config import build_agent_config
+from utils.agent_config import generate_structured
 from utils.hashing import generate_pseudonym_hash
 
 class IdentifiedEntity(BaseModel):
@@ -14,8 +12,8 @@ class IdentifiedEntity(BaseModel):
 class EntityDiscoveryResult(BaseModel):
     entities: list[IdentifiedEntity] = Field(description="List of all personal identifiable entities found in the text")
 
-async def discover_pii_entities(chronology_data: dict, api_key: str = None, backend: str = None, gemini_model: str = None, ollama_model: str = None) -> list[dict]:
-    """Uses DeidentifierAgent to discover all PII entities, relationships, and name variations."""
+async def discover_pii_entities(chronology_data: dict, api_key: str = None, backend: str = None, gemini_model: str = None, ollama_model: str = None, ollama_base_url: str = None) -> list[dict]:
+    """Discover PII entities, relationships, and aliases using validated model output."""
     
     system_instructions = (
         "You are an expert medical data privacy officer. Your task is to analyze chronological medical reports "
@@ -27,25 +25,18 @@ async def discover_pii_entities(chronology_data: dict, api_key: str = None, back
         "4. Critical: List all variations/forms/aliases of their name that appear in the text (e.g., full name, first name, last name with title, initials) so they can be replaced deterministically."
     )
     
-    config = build_agent_config(
-        system_instructions=system_instructions,
-        response_schema=EntityDiscoveryResult,
-        backend=backend,
-        api_key=api_key,
-        gemini_model=gemini_model,
-        ollama_model=ollama_model,
-    )
-    
     prompt = (
         "Analyze the following medical report and identify all personal identifiable entities, "
         "their relationships, and name variations.\n\n"
-        f"=== REPORT DATA ===\n{json.dumps(chronology_data, indent=2)}"
+        f"=== REPORT DATA ===\n{json.dumps(chronology_data, ensure_ascii=False, separators=(',', ':'))}"
     )
     
-    async with Agent(config=config) as agent:
-        response = await agent.chat(prompt)
-        data = await response.structured_output()
-        return data.get("entities", [])
+    data = await generate_structured(
+        prompt, system_instructions=system_instructions, response_schema=EntityDiscoveryResult,
+        backend=backend, api_key=api_key, gemini_model=gemini_model,
+        ollama_model=ollama_model, ollama_base_url=ollama_base_url,
+    )
+    return data["entities"]
 
 def perform_deidentification(chronology_data: dict, discovered_entities: list[dict]) -> tuple[dict, dict, dict]:
     """Deterministically pseudonymises the chronological report.

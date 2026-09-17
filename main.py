@@ -1,12 +1,15 @@
 import os
+import mimetypes
 import sys
 import json
 import asyncio
+from time import perf_counter
 from dotenv import load_dotenv
 
 # Add project root to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from utils.document_formats import DOCUMENT_EXTENSIONS
 from utils.helpers import get_data_dirs, save_json, load_json
 from utils.document_editor import deidentify_document, write_synthesis_summary
 from agents.transcriber import transcribe_media
@@ -36,7 +39,7 @@ async def run_pipeline():
     # 1. Load environment variables
     load_dotenv()
     api_key = os.getenv("GEMINI_API_KEY")
-    backend = os.getenv("AGENT_BACKEND", "gemini").lower().strip()
+    backend = os.getenv("AGENT_BACKEND", "ollama").lower().strip()
     ollama_model = os.getenv("OLLAMA_MODEL")
     if backend == "gemini" and not api_key:
         print("Error: GEMINI_API_KEY environment variable not found in .env file.")
@@ -64,6 +67,7 @@ async def run_pipeline():
         backend=backend,
         api_key=api_key if backend == "gemini" else None,
         ollama_model=ollama_model if backend == "ollama" else None,
+        ollama_base_url=os.getenv("OLLAMA_BASE_URL") if backend == "ollama" else None,
     )
     
     # 3. Stage 1: Multimodal Verbatim Extraction & Transcription
@@ -72,12 +76,13 @@ async def run_pipeline():
         filename = os.path.basename(filepath)
         print(f"--- Stage 1: Transcribing and extracting {filename} ---")
         try:
+            started = perf_counter()
             transcript = await transcribe_media(filepath, **_agent_kwargs)
             transcripts.append(transcript)
             # Save intermediate secure verbatim transcript
-            verbatim_path = os.path.join(secure_dir, f"verbatim_{os.path.splitext(filename)[0]}.json")
+            verbatim_path = os.path.join(secure_dir, f"verbatim_{filename}.json")
             save_json(transcript, verbatim_path)
-            print(f"Verbatim extraction completed and saved securely to {verbatim_path}")
+            print(f"Verbatim extraction completed in {perf_counter() - started:.1f}s and saved securely to {verbatim_path}")
         except Exception as e:
             print(f"Error processing {filename}: {e}")
             
@@ -88,10 +93,11 @@ async def run_pipeline():
     # 4. Stage 2: Chronological Cataloguing
     print("\n--- Stage 2: Compiling unified chronological catalogue ---")
     try:
+        started = perf_counter()
         unified_chronology = await catalogue_transcripts(transcripts, **_agent_kwargs)
         chrono_path = os.path.join(secure_dir, "unified_chronology.json")
         save_json(unified_chronology, chrono_path)
-        print(f"Unified chronological catalogue compiled and saved securely to {chrono_path}")
+        print(f"Unified chronology compiled in {perf_counter() - started:.1f}s and saved securely to {chrono_path}")
     except Exception as e:
         print(f"Error during cataloguing stage: {e}")
         return
@@ -99,13 +105,14 @@ async def run_pipeline():
     # 5. Stage 3.1 & 3.2: PII Discovery and Deterministic Pseudonymisation
     print("\n--- Stage 3: Discovering PII Named Entities and Hashing ---")
     try:
-        discovered_entities = await discover_pii_entities(unified_chronology, **_agent_kwargs)
+        started = perf_counter()
+        discovered_entities = await discover_pii_entities({"source_transcripts": transcripts, "chronology": unified_chronology}, **_agent_kwargs)
         
         # Save discovered entities for reference
         entities_path = os.path.join(secure_dir, "discovered_entities.json")
         save_json(discovered_entities, entities_path)
         
-        print(f"Discovered {len(discovered_entities)} unique PII entities and relationships.")
+        print(f"Discovered {len(discovered_entities)} unique PII entities in {perf_counter() - started:.1f}s.")
         
         # Perform deterministic pseudonymisation
         deidentified_chrono, identity_catalogue, replacement_map = perform_deidentification(
@@ -114,7 +121,7 @@ async def run_pipeline():
         
         # Save secure identity catalogue
         catalogue_path = os.path.join(secure_dir, "identity_catalogue.json")
-        save_json(identity_catalogue, catalogue_path)
+        save_json({**(load_json(catalogue_path) or {}), **identity_catalogue}, catalogue_path)
         print(f"Secure Identity Catalogue mapping saved to {catalogue_path}")
         
         # Save deidentified chronology securely
@@ -127,7 +134,7 @@ async def run_pipeline():
 
     # 6. Stage 3.2b: In-place document de-identification (PDF/DOCX)
     print("\n--- Stage 3.2b: De-identifying original documents in-place ---")
-    doc_extensions = {".pdf", ".docx"}
+    doc_extensions = DOCUMENT_EXTENSIONS
     deidentified_docs = []
     for filepath in input_files:
         filename = os.path.basename(filepath)
@@ -145,7 +152,7 @@ async def run_pipeline():
             except Exception as e:
                 print(f"  ✗ Error processing {filename}: {e}")
         else:
-            print(f"  · {filename}: not a PDF/DOCX, covered by text/JSON output")
+            print(f"  · {filename}: media transcript covered by text/JSON output")
 
     # 7. Stage 3.3: Generate synthesis summary and shareable reports
     print("\n--- Stage 3.3: Preparing synthesis summary and shareable reports ---")

@@ -5,3 +5,6 @@ streamlit
 pymupdf
 python-docx
 ocrmypdf
+httpx
+openpyxl
+python-pptx

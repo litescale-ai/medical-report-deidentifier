@@ -1,14 +1,17 @@
 import os
+import mimetypes
 import sys
 import json
 import shutil
 import asyncio
+from time import perf_counter
 import streamlit as st
 from dotenv import load_dotenv
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from utils.document_formats import DOCUMENT_EXTENSIONS
 from utils.helpers import get_data_dirs, save_json, load_json
 from utils.document_editor import (
     deidentify_document, write_synthesis_summary, reidentify_document,
@@ -183,6 +186,7 @@ st.sidebar.markdown("### ⚙️ Pipeline Configuration")
 run_mode = st.sidebar.radio(
     "Execution Mode",
     ["🌟 Gemini API (Cloud)", "🏠 Local Ollama (Gemma 4)", "🧪 Mock/Dry-Run (No model needed)"],
+    index=1,
     help="Choose where inference runs: Google's API, a local Ollama server, or a mock demo."
 )
 
@@ -220,20 +224,23 @@ if run_mode.startswith("🌟"):
 
 # --- Ollama local settings ---
 elif run_mode.startswith("🏠"):
+    configured_model = os.getenv("OLLAMA_MODEL", "gemma4:e4b")
+    ollama_models = list(dict.fromkeys([configured_model, "gemma4:e4b", "gemma4:e2b", "gemma4:12b", "gemma4:26b"]))
     ollama_model = st.sidebar.selectbox(
         "Ollama Model",
-        ["gemma4:e4b", "gemma4:e2b", "gemma4:12b", "gemma4:26b"],
+        ollama_models,
         index=0,
         help="Select the Gemma 4 model variant pulled in Ollama."
     )
     ollama_url = st.sidebar.text_input(
         "Ollama Server URL",
-        value="http://localhost:11434/v1",
+        value=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
         help="Default Ollama endpoint. Change only if running on a remote host."
     )
     st.sidebar.info(
         "💡 **Setup:** Install Ollama and pull Gemma 4:\n"
-        "```\nbrew install ollama\nollama pull gemma4:e4b\n```"
+        "```\nbrew install ollama\nollama serve\n```\n"
+        "In another terminal: `ollama pull gemma4:e4b`"
     )
     st.session_state["_backend"] = "ollama"
     st.session_state["_ollama_model"] = ollama_model
@@ -264,38 +271,45 @@ with tab_deidentify:
     st.subheader("1. Ingest Raw Session Data")
     
     uploaded_files = st.file_uploader(
-        "Upload raw medical documents, audio transcripts, or video recordings (PDF, TXT, MP3, MP4, etc.)", 
+        "Upload documents (TXT, MD, HTML, XLSX, DOCX, PDF, PPTX), audio, or video",
         accept_multiple_files=True
     )
     
+    st.caption("Office/HTML processing covers text. Embedded images, charts, attachments, and document metadata need separate review before sharing.")
+
     if uploaded_files:
         st.write("📂 **Ready to process:**")
-        cols = st.columns(len(uploaded_files))
+        cols = st.columns(min(len(uploaded_files), 3))
         for idx, file in enumerate(uploaded_files):
-            with cols[idx]:
+            with cols[idx % len(cols)]:
                 st.info(f"📄 {file.name}\n({round(file.size / 1024, 2)} KB)")
-                # Save file to input directory
-                dest_path = os.path.join(dirs["input"], file.name)
-                with open(dest_path, "wb") as f:
-                    f.write(file.getbuffer())
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="glass-card">', unsafe_allow_html=True)
     st.subheader("2. Run De-identification Pipeline")
     
     if st.button("🚀 Execute Pipeline", use_container_width=True):
-        _backend = st.session_state.get("_backend", "mock")
+        _backend = st.session_state.get("_backend", "ollama")
         _is_live = _backend in ("gemini", "ollama")
         if not uploaded_files and _is_live:
             st.error("Please upload at least one raw medical record file before processing.")
         elif not os.getenv("GEMINI_API_KEY") and _backend == "gemini":
             st.error("API Key not set. Please configure it in the sidebar settings.")
         else:
+            # Save uploads once per execution, not on every widget rerun.
+            for file in uploaded_files or []:
+                dest_path = os.path.join(dirs["input"], os.path.basename(file.name))
+                with open(dest_path, "wb") as f:
+                    f.write(file.getbuffer())
+            # A failed new run must not leave the previous run's downloads visible.
+            for key in ("pipeline_run", "synthesis_summary_txt", "deidentified_text", "deidentified_doc_paths"):
+                st.session_state.pop(key, None)
             log_container = st.empty()
             logs = []
+            started = perf_counter()
             
             def add_log(msg):
-                logs.append(msg)
+                logs.append(f"[{perf_counter() - started:.1f}s] {msg}")
                 log_container.markdown(
                     f'<div class="log-box">{"<br>".join(logs)}</div>', 
                     unsafe_allow_html=True
@@ -328,32 +342,36 @@ with tab_deidentify:
                             api_key=os.getenv("GEMINI_API_KEY") if _backend == "gemini" else None,
                             gemini_model=_gemini_model if _backend == "gemini" else None,
                             ollama_model=_ollama_model if _backend == "ollama" else None,
+                            ollama_base_url=st.session_state.get("_ollama_url") if _backend == "ollama" else None,
                         )
                         add_log(f"[SYSTEM] Starting pipeline via {_backend.upper()} backend...")
                         input_files = [
-                            os.path.join(dirs["input"], f.name) for f in uploaded_files
+                            os.path.join(dirs["input"], os.path.basename(f.name)) for f in uploaded_files
                         ]
                         
                         # Live Stage 1: Transcription
                         transcripts = []
                         for filepath in input_files:
                             fname = os.path.basename(filepath)
-                            add_log(f"[Stage 1] Running TranscriberAgent on '{fname}'...")
-                            transcript = await transcribe_media(filepath, **_agent_kwargs)
+                            add_log(f"[Stage 1] Extracting '{fname}'...")
+                            with st.spinner(f"Extracting {fname}...", show_time=True):
+                                transcript = await transcribe_media(filepath, **_agent_kwargs)
                             transcripts.append(transcript)
                             # Save securely
-                            save_json(transcript, os.path.join(dirs["secure"], f"verbatim_{os.path.splitext(fname)[0]}.json"))
+                            save_json(transcript, os.path.join(dirs["secure"], f"verbatim_{fname}.json"))
                             add_log(f"  - Verbatim transcription of '{fname}' saved securely.")
                         
                         # Live Stage 2: Cataloguing
-                        add_log("[Stage 2] Running CataloguerAgent to unify timelines...")
-                        unified_chronology = await catalogue_transcripts(transcripts, **_agent_kwargs)
+                        add_log("[Stage 2] Compiling chronology...")
+                        with st.spinner("Compiling chronology...", show_time=True):
+                            unified_chronology = await catalogue_transcripts(transcripts, **_agent_kwargs)
                         save_json(unified_chronology, os.path.join(dirs["secure"], "unified_chronology.json"))
                         add_log("  - Chronological ledger compiled and stored securely.")
                         
                         # Live Stage 3.1: PII Discovery
-                        add_log("[Stage 3.1] Running DeidentifierAgent to discover sensitive entities...")
-                        discovered_entities = await discover_pii_entities(unified_chronology, **_agent_kwargs)
+                        add_log("[Stage 3.1] Discovering sensitive entities...")
+                        with st.spinner("Discovering sensitive entities...", show_time=True):
+                            discovered_entities = await discover_pii_entities({"source_transcripts": transcripts, "chronology": unified_chronology}, **_agent_kwargs)
                         save_json(discovered_entities, os.path.join(dirs["secure"], "discovered_entities.json"))
                     
                     # Stage 3.2: Deterministic replacement (Runs same python code for both modes!)
@@ -363,17 +381,18 @@ with tab_deidentify:
                     )
                     
                     # Save local secure keys
-                    save_json(identity_catalogue, os.path.join(dirs["secure"], "identity_catalogue.json"))
+                    catalogue_path = os.path.join(dirs["secure"], "identity_catalogue.json")
+                    save_json({**(load_json(catalogue_path) or {}), **identity_catalogue}, catalogue_path)
                     save_json(deidentified_chrono, os.path.join(dirs["secure"], "deidentified_chronology.json"))
                     add_log("  - Secure Identity Catalogue generated locally.")
                     add_log("  - Replaced all discovered PII names & aliases with secure hashes.")
                     
                     # Stage 3.2b: In-place document de-identification (PDF/DOCX)
                     add_log("[Stage 3.2b] De-identifying original documents in-place...")
-                    doc_extensions = {".pdf", ".docx"}
+                    doc_extensions = DOCUMENT_EXTENSIONS
                     deidentified_doc_paths = []
                     input_files_list = [
-                        os.path.join(dirs["input"], f.name) for f in uploaded_files
+                        os.path.join(dirs["input"], os.path.basename(f.name)) for f in uploaded_files
                     ] if uploaded_files else []
                     
                     for filepath in input_files_list:
@@ -392,7 +411,7 @@ with tab_deidentify:
                             except Exception as e:
                                 add_log(f"  ✗ Error processing {fname}: {e}")
                         else:
-                            add_log(f"  · {fname}: not PDF/DOCX, covered by JSON output")
+                            add_log(f"  · {fname}: media transcript covered by JSON output")
                     
                     # Stage 3.3: Generate synthesis summary and shareable reports
                     add_log("[Stage 3.3] Generating synthesis summary and shareable reports...")
@@ -471,7 +490,7 @@ with tab_deidentify:
             for idx, doc_path in enumerate(deidentified_doc_paths):
                 doc_name = os.path.basename(doc_path)
                 ext = os.path.splitext(doc_name)[1].lower()
-                mime = "application/pdf" if ext == ".pdf" else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                mime = mimetypes.guess_type(doc_path)[0] or "application/octet-stream"
                 icon = "📕" if ext == ".pdf" else "📘"
                 with doc_cols[idx % len(doc_cols)]:
                     with open(doc_path, "rb") as df:
@@ -487,7 +506,7 @@ with tab_deidentify:
 
         st.markdown('<div class="glass-card">', unsafe_allow_html=True)
         st.subheader("📊 4. Interactive Clinical Chronology")
-        st.info("ℹ️ All Personally Identifiable Information (PII) has been safely replaced by unique cryptographic hash pseudonyms.")
+        st.info("ℹ️ Discovered identifiers have been replaced with pseudonyms. Review the output before sharing.")
         
         st.write(f"**Patient Summary Synthesis:** {deidentified_chrono.get('patient_summary')}")
         
@@ -525,9 +544,9 @@ with tab_reidentify:
     )
     
     returned_file = st.file_uploader(
-        "Upload returned file (.txt, .json, .pdf, or .docx)",
+        "Upload returned document (TXT, MD, HTML, XLSX, DOCX, PDF, PPTX, or JSON)",
         key="returned_file",
-        type=["txt", "json", "pdf", "docx"],
+        type=sorted(ext.lstrip(".") for ext in DOCUMENT_EXTENSIONS),
     )
     
     if returned_file:
@@ -538,7 +557,7 @@ with tab_reidentify:
             
         if st.button("🔓 Restore Original Identity Details", use_container_width=True):
             try:
-                is_document = file_ext in (".pdf", ".docx")
+                is_document = file_ext in DOCUMENT_EXTENSIONS - {".txt", ".json"}
                 
                 if is_document:
                     # Use document editor for format-preserved re-identification
@@ -547,13 +566,13 @@ with tab_reidentify:
                     if not identity_catalogue:
                         st.error("Identity Catalogue not found. Run the de-identification pipeline first.")
                     else:
-                        out_name = f"reidentified_{returned_file.name}"
+                        out_name = f"reidentified_{os.path.basename(returned_file.name)}"
                         out_path = os.path.join(dirs["output"], out_name)
                         reidentify_document(temp_path, out_path, identity_catalogue)
                         
                         st.success("Re-identification successful! Document formatting preserved.")
                         
-                        mime = "application/pdf" if file_ext == ".pdf" else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        mime = mimetypes.guess_type(out_name)[0] or "application/octet-stream"
                         with open(out_path, "rb") as df:
                             st.download_button(
                                 label=f"💾 Download Re-identified {file_ext.upper()} Report",

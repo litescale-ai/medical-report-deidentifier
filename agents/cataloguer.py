@@ -1,7 +1,6 @@
 import json
 from pydantic import BaseModel, Field
-from google.antigravity import Agent
-from utils.agent_config import build_agent_config
+from utils.agent_config import generate_structured
 
 class CatalogueEvent(BaseModel):
     timestamp: str = Field(description="Normalized timestamp or date/time of the event (e.g., '2026-05-27 10:00:00', 'Intake Day', or 'Session 1 - 00:05:12')")
@@ -15,8 +14,8 @@ class UnifiedChronology(BaseModel):
     categories_found: list[str] = Field(description="List of categories identified across all sources")
     chronology: list[CatalogueEvent] = Field(description="The unified timeline of all events across all sessions, ordered chronologically")
 
-async def catalogue_transcripts(transcripts: list[dict], api_key: str = None, backend: str = None, gemini_model: str = None, ollama_model: str = None) -> dict:
-    """Uses the CataloguerAgent to compile multiple verbatim extractions into a unified chronological catalogue."""
+async def catalogue_transcripts(transcripts: list[dict], api_key: str = None, backend: str = None, gemini_model: str = None, ollama_model: str = None, ollama_base_url: str = None) -> dict:
+    """Compile extracted text into a validated chronological catalogue."""
     
     system_instructions = (
         "You are an expert medical data cataloguer. Your task is to ingest multiple verbatim transcriptions "
@@ -28,25 +27,16 @@ async def catalogue_transcripts(transcripts: list[dict], api_key: str = None, ba
         "4. Include references to the original source files for auditability."
     )
     
-    config = build_agent_config(
-        system_instructions=system_instructions,
-        response_schema=UnifiedChronology,
-        backend=backend,
-        api_key=api_key,
-        gemini_model=gemini_model,
-        ollama_model=ollama_model,
-    )
-    
     # Format transcripts to feed into the prompt
-    input_text = json.dumps(transcripts, indent=2)
+    input_text = json.dumps(transcripts, ensure_ascii=False, separators=(",", ":"))
     prompt = (
         "Organize the following verbatim extractions into a unified chronological medical report.\n"
         "Categorize each event, order them chronologically, and preserve all verbatim dialogue and visual descriptions.\n\n"
         f"=== TRANSCRIPTS DATA ===\n{input_text}"
     )
     
-    async with Agent(config=config) as agent:
-        response = await agent.chat(prompt)
-        data = await response.structured_output()
-        return data
-
+    return await generate_structured(
+        prompt, system_instructions=system_instructions, response_schema=UnifiedChronology,
+        backend=backend, api_key=api_key, gemini_model=gemini_model,
+        ollama_model=ollama_model, ollama_base_url=ollama_base_url,
+    )

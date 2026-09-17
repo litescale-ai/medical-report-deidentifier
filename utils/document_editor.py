@@ -1,4 +1,4 @@
-"""Document editor for in-place PDF and DOCX de-identification.
+"""Format-preserving replacement and restoration of discovered identifiers.
 
 Provides format-preserving find-and-replace for:
   - PDF files (via PyMuPDF): redact + insert with font matching
@@ -9,6 +9,8 @@ Also provides a synthesis summary writer for the companion output file.
 
 import os
 import json
+from utils.document_formats import (DOCUMENT_EXTENSIONS, TEXT_EXTENSIONS, HtmlText,
+    read_text, replace_strings, all_docx_paragraphs, presentation_paragraphs)
 from typing import Optional
 
 
@@ -77,10 +79,9 @@ def _pymupdf_fontname_to_base(fontname: str) -> str:
     return "helv"
 
 
-def _extract_span_style(page, search_rect) -> dict:
-    """Find the best text style (font, size, color) that intersects with the given search rectangle."""
+def _extract_span_style(blocks, search_rect) -> dict:
+    """Find the matching style in text blocks extracted once for this page."""
     import pymupdf
-    blocks = page.get_text("dict")["blocks"]
     
     best_span = None
     max_area = 0
@@ -114,23 +115,6 @@ def _extract_span_style(page, search_rect) -> dict:
     }
 
 
-def _is_pdf_searchable(doc, replacement_map: dict[str, str]) -> bool:
-    """Quick check: does the PDF have a usable text layer?
-
-    Returns True if search_for() can find at least one of the replacement
-    targets anywhere in the document.  Returns False for scanned / CIDFont
-    PDFs with no ToUnicode mapping.
-    """
-    sorted_keys = sorted(replacement_map.keys(), key=len, reverse=True)
-    for page in doc:
-        for target in sorted_keys:
-            if not target.strip():
-                continue
-            if page.search_for(target):
-                return True
-    return False
-
-
 def _ocr_pdf(input_path: str) -> str:
     """Run OCR on a PDF to produce a searchable copy.
 
@@ -144,13 +128,13 @@ def _ocr_pdf(input_path: str) -> str:
     fd, ocr_path = tempfile.mkstemp(suffix=".pdf")
     os.close(fd)
 
-    ocrmypdf.ocr(
-        input_path,
-        ocr_path,
-        force_ocr=True,
-        optimize=1,
-        progress_bar=False,
-    )
+    try:
+        ocrmypdf.ocr(
+            input_path, ocr_path, force_ocr=True, optimize=1, progress_bar=False,
+        )
+    except Exception:
+        os.unlink(ocr_path)
+        raise
     return ocr_path
 
 
@@ -167,12 +151,17 @@ def _redact_pdf(input_path: str, output_path: str, replacement_map: dict[str, st
 
     for page in doc:
         replacements = []
+        blocks = None
         for target in sorted_keys:
             if not target.strip():
                 continue
             rects = page.search_for(target)
+            if rects and blocks is None:
+                blocks = page.get_text("dict")["blocks"]
             for rect in rects:
-                style = _extract_span_style(page, rect)
+                if any(rect.intersects(existing) for existing, _, _ in replacements):
+                    continue
+                style = _extract_span_style(blocks, rect)
                 replacements.append((rect, replacement_map[target], style))
 
         if not replacements:
@@ -200,7 +189,8 @@ def _redact_pdf(input_path: str, output_path: str, replacement_map: dict[str, st
                 color=color,
             )
 
-    doc.save(output_path)
+    # Discard unreferenced original streams; visible redaction alone can leave PII recoverable.
+    doc.save(output_path, garbage=4, deflate=True)
     doc.close()
     return total_replacements
 
@@ -210,56 +200,23 @@ def deidentify_pdf(
     output_path: str,
     replacement_map: dict[str, str],
 ) -> bool:
-    """Replace PII strings in a PDF with pseudonym hashes, preserving layout.
+    """Replace known identifiers, OCRing image-only pages before editing.
 
-    Uses a two-phase approach:
-      1. Try direct text search on the original PDF.
-      2. If the text layer is unsearchable (scanned / broken CIDFonts),
-         automatically OCR the PDF first, then retry redaction.
-
-    Args:
-        input_path: Path to the original PDF.
-        output_path: Path to save the de-identified PDF.
-        replacement_map: Mapping of real PII strings → pseudonym hashes.
-
-    Returns:
-        True if the PDF was successfully processed with at least one replacement.
+    Raises if OCR fails; never exports the unchanged source as a successful result.
+    A searchable document without matching identifiers is copied without OCR.
     """
     import pymupdf
 
-    # First attempt: direct redaction
-    doc = pymupdf.open(input_path)
-    searchable = _is_pdf_searchable(doc, replacement_map)
-    doc.close()
-
-    if searchable:
-        count = _redact_pdf(input_path, output_path, replacement_map)
-        return count > 0
-
-    # Fallback: OCR the PDF, then redact the OCR'd version
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.info("PDF text layer is unsearchable — running OCR fallback...")
-
+    # OCR only when a page has images without usable text. A document with no
+    # discovered entities is still a valid output; no-match is not an OCR signal.
+    with pymupdf.open(input_path) as doc:
+        needs_ocr = any(not page.get_text().strip() and page.get_images() for page in doc)
     ocr_path = None
     try:
-        ocr_path = _ocr_pdf(input_path)
-        count = _redact_pdf(ocr_path, output_path, replacement_map)
-        if count > 0:
-            logger.info(f"OCR fallback succeeded: {count} replacements made")
-            return True
-        else:
-            logger.warning("OCR fallback produced 0 replacements — OCR may not have recognised the text")
-            # Still copy the OCR'd version so the user at least gets a searchable PDF
-            import shutil
-            shutil.copy2(ocr_path, output_path)
-            return False
-    except Exception as e:
-        logger.error(f"OCR fallback failed: {e}")
-        # Copy original as-is so downstream doesn't break
-        import shutil
-        shutil.copy2(input_path, output_path)
-        return False
+        if needs_ocr:
+            ocr_path = _ocr_pdf(input_path)
+        _redact_pdf(ocr_path or input_path, output_path, replacement_map)
+        return True
     finally:
         if ocr_path and os.path.exists(ocr_path):
             os.unlink(ocr_path)
@@ -270,79 +227,16 @@ def deidentify_pdf(
 # ---------------------------------------------------------------------------
 
 def _replace_in_runs(paragraph, replacement_map: dict[str, str]) -> int:
-    """Replace PII text in a paragraph's runs, preserving per-run formatting.
-
-    Handles the common case where a PII string is contained within a single
-    run.  For cross-run splits, falls back to a joined-run replacement
-    strategy that preserves the formatting of the first matching run.
-    """
-    sorted_keys = sorted(replacement_map.keys(), key=len, reverse=True)
-    replacements_made = 0
-
-    # First pass: simple per-run replacement
-    for run in paragraph.runs:
-        for real_text in sorted_keys:
-            if real_text in run.text:
-                run.text = run.text.replace(real_text, replacement_map[real_text])
-                replacements_made += 1
-
-    # Second pass: handle cross-run splits
-    full_text = paragraph.text
-    for real_text in sorted_keys:
-        if real_text not in full_text:
-            continue
-
-        # Check if it was already handled in per-run pass
-        remaining = "".join(r.text for r in paragraph.runs)
-        if real_text not in remaining:
-            continue
-
-        # Cross-run replacement: find the runs that span this text
-        if _replace_across_runs(paragraph, real_text, replacement_map[real_text]):
-            replacements_made += 1
-            
-    return replacements_made
-
-
-def _replace_across_runs(paragraph, target: str, replacement: str) -> bool:
-    """Replace text that spans multiple runs in a paragraph.
-
-    Keeps the formatting of the first run that contains part of the target.
-    Returns True if replaced.
-    """
-    runs = paragraph.runs
-    if not runs:
-        return False
-
-    # Build a character-to-run mapping
-    char_positions = []  # list of (run_index, char_index_in_run)
-    for ri, run in enumerate(runs):
-        for ci in range(len(run.text)):
-            char_positions.append((ri, ci))
-
-    full_text = "".join(r.text for r in runs)
-    start_idx = full_text.find(target)
-    if start_idx == -1:
-        return False
-
-    end_idx = start_idx + len(target)
-
-    # Determine which runs are affected
-    start_run, start_char = char_positions[start_idx]
-    end_run, end_char = char_positions[end_idx - 1]
-
-    # Put the replacement text into the first affected run
-    runs[start_run].text = (
-        runs[start_run].text[:start_char]
-        + replacement
-        + runs[end_run].text[end_char + 1:]
-    )
-
-    # Clear intermediate and end runs (if different from start)
-    for ri in range(start_run + 1, end_run + 1):
-        runs[ri].text = ""
-        
-    return True
+    """Replace across formatting boundaries without changing unrelated run styles."""
+    from docx.text.paragraph import Paragraph
+    from docx.text.run import Run
+    runs = [Run(element, paragraph) for element in paragraph._p.xpath(".//w:r")] if isinstance(paragraph, Paragraph) else paragraph.runs
+    original = [run.text for run in runs]
+    updated = replace_strings(original, replacement_map)
+    for run, text in zip(runs, updated):
+        if run.text != text:
+            run.text = text
+    return int(original != updated)
 
 
 def _process_paragraphs(paragraphs, replacement_map: dict[str, str]) -> int:
@@ -374,34 +268,63 @@ def deidentify_docx(
 
     doc = Document(input_path)
 
-    # Body paragraphs
-    _process_paragraphs(doc.paragraphs, replacement_map)
-
-    # Tables (including nested tables)
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                _process_paragraphs(cell.paragraphs, replacement_map)
-
-    # Headers and footers
-    for section in doc.sections:
-        for header in [section.header, section.first_page_header, section.even_page_header]:
-            if header and header.is_linked_to_previous is False:
-                _process_paragraphs(header.paragraphs, replacement_map)
-                for table in header.tables:
-                    for row in table.rows:
-                        for cell in row.cells:
-                            _process_paragraphs(cell.paragraphs, replacement_map)
-
-        for footer in [section.footer, section.first_page_footer, section.even_page_footer]:
-            if footer and footer.is_linked_to_previous is False:
-                _process_paragraphs(footer.paragraphs, replacement_map)
-                for table in footer.tables:
-                    for row in table.rows:
-                        for cell in row.cells:
-                            _process_paragraphs(cell.paragraphs, replacement_map)
+    _process_paragraphs(all_docx_paragraphs(doc), replacement_map)
 
     doc.save(output_path)
+    return True
+
+
+def _replace_formula(formula, replacement_map, sheet_titles):
+    """Replace formula string literals and renamed sheet references, never operators/cell names."""
+    from openpyxl.formula import Tokenizer
+    tokenizer = Tokenizer(formula)
+    for token in tokenizer.items:
+        if token.type == "OPERAND" and token.subtype == "TEXT":
+            literal = token.value[1:-1].replace('""', '"')
+            token.value = '"' + replace_strings([literal], replacement_map)[0].replace('"', '""') + '"'
+        elif token.type == "OPERAND" and token.subtype == "RANGE" and "!" in token.value:
+            sheet, reference = token.value.rsplit("!", 1)
+            name = sheet[1:-1].replace("''", "'") if sheet.startswith("'") else sheet
+            if name in sheet_titles and sheet_titles[name] != name:
+                token.value = "'" + sheet_titles[name].replace("'", "''") + "'!" + reference
+    return tokenizer.render()
+
+
+def deidentify_xlsx(input_path, output_path, replacement_map):
+    """Replace spreadsheet strings, comments and links; retain numbers and cell styles."""
+    from openpyxl import load_workbook
+    workbook = load_workbook(input_path)
+    try:
+        sheet_titles = {sheet.title: replace_strings([sheet.title], replacement_map)[0] for sheet in workbook}
+        titles = list(sheet_titles.values())
+        if len({title.lower() for title in titles}) != len(titles) or any(len(title) > 31 for title in titles):
+            raise ValueError("Pseudonymised sheet titles would be duplicate or too long; rename the source sheets first.")
+        for sheet in workbook:
+            sheet.title = sheet_titles[sheet.title]
+            for row in sheet:
+                for cell in row:
+                    if cell.data_type == "f":
+                        cell.value = _replace_formula(cell.value, replacement_map, sheet_titles)
+                    elif isinstance(cell.value, str):
+                        cell.value = replace_strings([cell.value], replacement_map)[0]
+                    if cell.comment:
+                        cell.comment.text = replace_strings([cell.comment.text], replacement_map)[0]
+                        cell.comment.author = replace_strings([cell.comment.author], replacement_map)[0]
+                    if cell.hyperlink and cell.hyperlink.target:
+                        cell.hyperlink.target = replace_strings([cell.hyperlink.target], replacement_map)[0]
+        workbook.save(output_path)
+    finally:
+        workbook.close()
+    return True
+
+
+def deidentify_pptx(input_path, output_path, replacement_map):
+    """Replace slide text, tables, grouped shapes and speaker notes in the original deck."""
+    from pptx import Presentation
+    presentation = Presentation(input_path)
+    for _, paragraphs in presentation_paragraphs(presentation):
+        _process_paragraphs(paragraphs, replacement_map)
+    presentation.save(output_path)
     return True
 
 
@@ -504,6 +427,19 @@ def deidentify_document(
         return deidentify_pdf(input_path, output_path, replacement_map)
     elif ext == ".docx":
         return deidentify_docx(input_path, output_path, replacement_map)
+    elif ext == ".xlsx":
+        return deidentify_xlsx(input_path, output_path, replacement_map)
+    elif ext == ".pptx":
+        return deidentify_pptx(input_path, output_path, replacement_map)
+    elif ext in TEXT_EXTENSIONS:
+        text = read_text(input_path)
+        if ext in {".html", ".htm"}:
+            text = HtmlText(text).replace(replacement_map)
+        else:
+            text = replace_strings([text], replacement_map)[0]
+        with open(output_path, "w", encoding="utf-8") as output:
+            output.write(text)
+        return True
     else:
         return False
 
@@ -513,7 +449,7 @@ def reidentify_document(
     output_path: str,
     identity_catalogue: dict,
 ) -> bool:
-    """Reverse de-identification on a PDF or DOCX document.
+    """Reverse de-identification in any supported document format.
 
     Builds a reverse replacement map (pseudonym → canonical name) from the
     identity catalogue and applies it to the document.
@@ -527,7 +463,7 @@ def reidentify_document(
         True if the document was processed, False if format is unsupported.
     """
     ext = os.path.splitext(input_path)[1].lower()
-    if ext not in (".pdf", ".docx"):
+    if ext not in DOCUMENT_EXTENSIONS:
         return False
 
     # Build reverse map: pseudonym_hash → canonical_name
