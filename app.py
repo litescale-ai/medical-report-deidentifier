@@ -1,4 +1,6 @@
 import os
+import base64
+from pathlib import Path
 import mimetypes
 import sys
 import json
@@ -24,7 +26,7 @@ from reidentify import reidentify_report
 # Page Config
 st.set_page_config(
     page_title="Guardian Medical De-identifier",
-    page_icon="🛡️",
+    page_icon=str(Path(__file__).parent / "src-tauri/icons/128x128.png"),
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -173,9 +175,10 @@ def save_api_key(key: str):
     os.environ["GEMINI_API_KEY"] = key
 
 # App Title Header
-st.markdown("""
+_icon = base64.b64encode((Path(__file__).parent / "src-tauri/icons/128x128.png").read_bytes()).decode("ascii")
+st.markdown(f"""
 <div class="title-container">
-    <h1>🛡️ GUARDIAN MEDICAL DE-IDENTIFIER</h1>
+    <h1><img src="data:image/png;base64,{_icon}" alt="Guardian private document" width="64" height="64" style="vertical-align:middle; margin-right:12px"> GUARDIAN MEDICAL DE-IDENTIFIER</h1>
     <p>Securely extract, catalog, and de-identify patient medical records using local salt-based pseudonymisation</p>
 </div>
 """, unsafe_allow_html=True)

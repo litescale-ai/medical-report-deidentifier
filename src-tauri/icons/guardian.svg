@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Guardian: private documents</title>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="#102c39"/>
+  <path d="M143 82h137l72 72v241a25 25 0 0 1-25 25H143a25 25 0 0 1-25-25V107a25 25 0 0 1 25-25Z" fill="#f4f7f6"/>
+  <path d="M280 82v54a18 18 0 0 0 18 18h54Z" fill="#b7cecf"/>
+  <rect x="157" y="194" width="154" height="23" rx="7" fill="#102c39"/>
+  <rect x="157" y="245" width="117" height="23" rx="7" fill="#102c39"/>
+  <rect x="157" y="296" width="64" height="23" rx="7" fill="#b7cecf"/>
+  <path d="M292 323v-39a39 39 0 0 1 78 0v39" fill="none" stroke="#102c39" stroke-width="30"/>
+  <path d="M292 323v-39a39 39 0 0 1 78 0v39" fill="none" stroke="#36d6ba" stroke-width="18"/>
+  <rect x="256" y="312" width="151" height="120" rx="25" fill="#36d6ba" stroke="#102c39" stroke-width="11"/>
+  <circle cx="331" cy="363" r="13" fill="#102c39"/>
+  <path d="M331 370v22" stroke="#102c39" stroke-width="13" stroke-linecap="round"/>
+</svg>

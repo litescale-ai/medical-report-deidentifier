@@ -66,7 +66,14 @@ command() {
     fi
     builtin command "$@"
 }
-brew() { echo "brew $*" >> "$TEST_ROOT/calls"; touch "$TEST_ROOT/tools-ready"; }
+brew() {
+    echo "brew $*" >> "$TEST_ROOT/calls"
+    if [ "$1" = upgrade ]; then
+        if [ "${SCENARIO:-}" = upgrade-failed ]; then return 32; fi
+        touch "$TEST_ROOT/upgraded"
+    fi
+    touch "$TEST_ROOT/tools-ready"
+}
 tesseract() { :; }
 gs() { :; }
 git() {
@@ -89,6 +96,7 @@ curl() {
             fi ;;
         *api/tags*)
             if [ "${SCENARIO:-}" = timeout ] && [ -e "$TEST_ROOT/server.pid" ]; then SECONDS=$((SECONDS + 31)); fi
+            if [ -e "$TEST_ROOT/server.pid" ] && ! kill -0 "$(cat "$TEST_ROOT/server.pid")" 2>/dev/null; then return 7; fi
             test -e "$TEST_ROOT/ready" ;;
         *bootstrap.sh*)
             if [ "${SCENARIO:-}" = download-failed ]; then return 22; fi
@@ -100,7 +108,16 @@ ollama() {
     echo "ollama $*" >> "$TEST_ROOT/calls"
     case "$1" in
         show) test -e "$TEST_ROOT/model" ;;
-        pull) test -e "$TEST_ROOT/ready" || return 77; touch "$TEST_ROOT/model" ;;
+        pull)
+            test -e "$TEST_ROOT/ready" || return 77
+            if [ "${SCENARIO:-}" = network-failed ]; then echo 'network unavailable' >&2; return 1; fi
+            if [[ "${SCENARIO:-}" = old-* ]] || [ "${SCENARIO:-}" = upgrade-failed ]; then
+                if [ ! -e "$TEST_ROOT/upgraded" ] || [ "${SCENARIO:-}" = old-still-incompatible ]; then
+                    echo 'Error: pull model manifest: 412: The model requires a newer version of Ollama.' >&2
+                    return 1
+                fi
+            fi
+            touch "$TEST_ROOT/model" ;;
     esac
 }
 nohup() { exec "$TEST_ROOT/fake-ollama"; }
@@ -108,7 +125,8 @@ sleep() { /bin/sleep 0.02; }
 lsof() { if [ "${SCENARIO:-}" = already-open ]; then echo 1234; else return 1; fi; }
 ps() { echo "python -m streamlit run $GUARDIAN_INSTALL_DIR/app.py"; }
 open() { echo "open $*" >> "$TEST_ROOT/calls"; }
-export -f uname command brew tesseract gs git python3.12 curl ollama nohup sleep lsof ps open
+osascript() { cat >/dev/null; echo "icon $*" >> "$TEST_ROOT/calls"; }
+export -f uname command brew tesseract gs git python3.12 curl ollama nohup sleep lsof ps open osascript
 ''')
         self.env = {**os.environ, "TEST_ROOT": str(self.root), "BASH_ENV": str(self.shims),
                     "HOME": str(self.root / "home"), "TMPDIR": str(self.root),
@@ -150,6 +168,7 @@ export -f uname command brew tesseract gs git python3.12 curl ollama nohup sleep
         self.assertIn("app-started", result.stdout)
         shortcut = self.root / "home/Desktop/Guardian.command"
         self.assertTrue(os.access(shortcut, os.X_OK))
+        self.assertIn("icon -l JavaScript", self.calls())
         self.assertIn("AGENT_BACKEND='ollama'", (self.checkout / ".env").read_text())
         (self.root / "calls").write_text("")
         launch = subprocess.run(["/bin/bash", str(shortcut)], env=self.env,
@@ -233,6 +252,39 @@ export -f uname command brew tesseract gs git python3.12 curl ollama nohup sleep
         installed = json.loads(report.read_text())["install"]
         self.assertEqual(installed[0]["metadata"]["version"], "1.0")
         self.assertTrue(installed[0]["download_info"]["url"].endswith(".whl"))
+
+    def test_old_ollama_started_by_launcher_upgrades_restarts_and_retries_once(self):
+        self.prepare_existing()
+        result = self.run_script("run_app.sh", SCENARIO="old-owned")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.calls().splitlines()
+        self.assertEqual(calls.count("brew upgrade ollama"), 1)
+        self.assertEqual(calls.count("serve"), 2)
+        self.assertEqual(calls.count("ollama pull gemma4:e4b"), 2)
+        self.assertIn("app-started", result.stdout)
+
+    def test_old_external_server_is_preserved_with_restart_instruction(self):
+        self.prepare_existing()
+        (self.root / "ready").touch()
+        result = self.run_script("run_app.sh", SCENARIO="old-external")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("brew upgrade ollama", self.calls())
+        self.assertIn("Restart your Mac", result.stdout + result.stderr)
+        self.assertNotIn("serve", self.calls().splitlines())
+        self.assertNotIn("streamlit", self.calls())
+
+    def test_ollama_upgrade_is_bounded_and_other_errors_do_not_upgrade(self):
+        self.prepare_existing()
+        (self.root / "ready").touch()
+        for scenario in ("old-still-incompatible", "network-failed", "upgrade-failed"):
+            with self.subTest(scenario=scenario):
+                (self.root / "calls").write_text("")
+                result = self.run_script("run_app.sh", SCENARIO=scenario,
+                                         GUARDIAN_OLLAMA_UPGRADE_ATTEMPTED="1" if scenario == "old-still-incompatible" else "")
+                self.assertNotEqual(result.returncode, 0)
+                if scenario != "upgrade-failed":
+                    self.assertNotIn("brew upgrade", self.calls())
+                self.assertNotIn("streamlit", self.calls())
 
     def test_update_preserves_settings_and_existing_model(self):
         self.prepare_existing()

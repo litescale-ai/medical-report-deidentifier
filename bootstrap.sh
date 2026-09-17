@@ -105,7 +105,20 @@ if [ "$(uname -s)" = Darwin ]; then
             printf '  read -rp "Guardian could not start. Read the error above. Press Return to close."\nfi\n'
         } > "$shortcut"
         chmod +x "$shortcut"
-        echo "Ready. Next time, double-click Guardian on your Desktop."
+        # Finder custom icon: native macOS API, no extra packages or application control.
+        if ! osascript -l JavaScript - "$PWD/src-tauri/icons/icon.png" "$shortcut" <<'JS'
+ObjC.import('AppKit');
+function run(args) {
+    const icon = $.NSImage.alloc.initWithContentsOfFile(args[0]);
+    if (!$.NSWorkspace.sharedWorkspace.setIconForFileOptions(icon, args[1], 0)) {
+        throw new Error('Could not set the Guardian shortcut icon');
+    }
+}
+JS
+        then
+            echo "Could not set the Desktop icon; the Guardian shortcut still works."
+        fi
+        echo "Desktop shortcut created. Preparing Ollama, then opening Guardian..."
     else
         echo "Existing Desktop shortcut left unchanged. Open with: bash $PWD/run_app.sh"
     fi

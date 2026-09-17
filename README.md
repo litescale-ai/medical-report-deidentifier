@@ -82,8 +82,12 @@ See [Homebrew's installation documentation](https://docs.brew.sh/Installation)
 for system requirements and password prompts.
 
 If setup fails, keep the error text and rerun the install command after resolving
-it. If Ollama reports that it needs a newer version, update Ollama and restart it
-before retrying. No running service is forcibly stopped by setup.
+it. If the model requires a newer Ollama, the launcher updates a Homebrew-installed
+Ollama and retries once when it started the server itself. If an older server was
+already running, follow the instruction to restart your Mac, then double-click
+Guardian.command. For Ollama installed outside Homebrew, update it from
+[ollama.com/download](https://ollama.com/download) and restart your Mac. The
+launcher never stops a server started by another terminal or app.
 
 ### Existing checkouts and Linux
 

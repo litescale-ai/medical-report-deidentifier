@@ -28,6 +28,7 @@ if command -v lsof >/dev/null; then
     fi
 fi
 
+ollama_pid=""
 if ! curl --noproxy '*' -fsS --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
     log_file=$(mktemp "${TMPDIR:-/tmp}/guardian-ollama.XXXXXX")
     echo "Starting Ollama. Log: $log_file"
@@ -62,7 +63,42 @@ PY
 export OLLAMA_MODEL="$model"
 if ! ollama show "$model" >/dev/null 2>&1; then
     echo "Downloading $model. This is needed only once; progress appears below."
-    ollama pull "$model"
+    pull_log=$(mktemp "${TMPDIR:-/tmp}/guardian-pull.XXXXXX")
+    if ollama pull "$model" 2>&1 | tee "$pull_log"; then
+        rm -f "$pull_log"
+    else
+        pull_status=$?
+        needs_upgrade=false
+        if grep -qi 'requires a newer version of Ollama' "$pull_log"; then
+            needs_upgrade=true
+        fi
+        rm -f "$pull_log"
+        # Do not leave an outdated server we started behind after a failed setup.
+        # Existing servers may belong to another terminal/app; leave those alone.
+        if [ -n "$ollama_pid" ]; then
+            kill "$ollama_pid" 2>/dev/null || true
+            wait "$ollama_pid" 2>/dev/null || true
+        fi
+        if $needs_upgrade && [ "${GUARDIAN_OLLAMA_UPGRADE_ATTEMPTED:-}" != 1 ]; then
+            if [ "$(uname -s)" = Darwin ] && command -v brew >/dev/null &&
+               brew list --formula --versions ollama >/dev/null 2>&1; then
+                echo "This model needs a newer Ollama. Updating it with Homebrew..."
+                brew update
+                brew upgrade ollama
+                if [ -n "$ollama_pid" ]; then
+                    export GUARDIAN_OLLAMA_UPGRADE_ATTEMPTED=1
+                    exec /bin/bash "$DIR/run_app.sh"
+                fi
+                echo "Ollama has been updated, but an older server is still running."
+                echo "Restart your Mac, then double-click Guardian.command on your Desktop."
+            else
+                echo "Update Ollama from https://ollama.com/download, then restart your Mac and open Guardian.command." >&2
+            fi
+        elif $needs_upgrade; then
+            echo "The updated Ollama still cannot download $model. Check https://ollama.com/download for a compatible release." >&2
+        fi
+        exit "$pull_status"
+    fi
 fi
 
 echo "Opening Guardian at http://localhost:8501 (PID $$)."
