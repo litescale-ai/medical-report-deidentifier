@@ -3,6 +3,7 @@ from PyInstaller.utils.hooks import copy_metadata
 
 datas = [
     ("app.py", "."),
+    ("src-tauri/icons/128x128.png", "src-tauri/icons"),
     ("main.py", "."),
     ("reidentify.py", "."),
     ("agents", "agents"),
