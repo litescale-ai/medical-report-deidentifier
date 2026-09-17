@@ -1,6 +1,9 @@
 """Exercise the real shell scripts with isolated tool shims; never install software."""
 
 import os
+import json
+import tarfile
+import zipfile
 import errno
 import fcntl
 import pty
@@ -197,6 +200,39 @@ export -f uname command brew tesseract gs git python3.12 curl ollama nohup sleep
                 os.killpg(process.pid, signal.SIGKILL)
             process.wait()
             os.close(master)
+
+    def test_pdf_dependency_chooses_available_wheel_over_newer_source_release(self):
+        # Offline package index: an older usable wheel and a newer source-only
+        # release reproduce pip's choice on Intel Macs with older macOS.
+        index = self.root / "package-index"
+        index.mkdir()
+        with zipfile.ZipFile(index / "pikepdf-1.0-py3-none-any.whl", "w") as wheel:
+            wheel.writestr("pikepdf-1.0.dist-info/METADATA", "Metadata-Version: 2.1\nName: pikepdf\nVersion: 1.0\n")
+            wheel.writestr("pikepdf-1.0.dist-info/WHEEL", "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
+            wheel.writestr("pikepdf-1.0.dist-info/RECORD", "")
+        source = self.root / "pikepdf-2.0"
+        source.mkdir()
+        (source / "pyproject.toml").write_text(
+            '[build-system]\nrequires=[]\nbuild-backend="builder"\nbackend-path=["."]\n')
+        (source / "builder.py").write_text(
+            'def build_wheel(*args, **kwargs):\n    raise RuntimeError("Unexpected native source build")\n')
+        with tarfile.open(index / "pikepdf-2.0.tar.gz", "w:gz") as archive:
+            archive.add(source, arcname=source.name)
+        # Apply the real requirements-file install policy to this minimal case.
+        policy = self.root / "policy.txt"
+        policy.write_text("\n".join(line for line in (ROOT / "requirements.txt").read_text().splitlines()
+                                    if line.startswith("--")) + "\npikepdf\n")
+        report = self.root / "resolved.json"
+        result = subprocess.run(
+            [self.env["REAL_PYTHON"], "-m", "pip", "install", "--dry-run", "--ignore-installed",
+             "--no-index", "--no-deps", "--no-build-isolation", "--find-links", str(index),
+             "--report", str(report), "-r", str(policy)],
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        installed = json.loads(report.read_text())["install"]
+        self.assertEqual(installed[0]["metadata"]["version"], "1.0")
+        self.assertTrue(installed[0]["download_info"]["url"].endswith(".whl"))
 
     def test_update_preserves_settings_and_existing_model(self):
         self.prepare_existing()

@@ -1,3 +1,5 @@
+# Use bundled QPDF wheels; newer pikepdf source releases may lack wheels for older Intel Macs.
+--only-binary=pikepdf
 google-antigravity>=0.1.12
 pydantic
 python-dotenv

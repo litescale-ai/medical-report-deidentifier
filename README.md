@@ -76,7 +76,9 @@ Setup installs Homebrew if needed, then Python 3.12, Git, Tesseract, Ghostscript
 and Ollama as needed. It installs the app packages, configures local Ollama, and
 launches Guardian. The launcher downloads `gemma4:e4b` only if it is absent; an
 existing configured model is retained. Progress and errors remain visible in
-Terminal. See [Homebrew's installation documentation](https://docs.brew.sh/Installation)
+Terminal. PDF dependencies use prebuilt `pikepdf` wheels, so pip can select a
+compatible OCRmyPDF version on older Intel Macs without compiling QPDF.
+See [Homebrew's installation documentation](https://docs.brew.sh/Installation)
 for system requirements and password prompts.
 
 If setup fails, keep the error text and rerun the install command after resolving
