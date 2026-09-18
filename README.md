@@ -248,3 +248,5 @@ Generation tokens per second uses Ollama's output-token count divided by its gen
 Each run saves a private `manifest.json` beside its resumable checkpoint under `data/secure/batches/`. The results screen displays its exact location. It records elapsed time, per-file status and counts, identity types, measured token statistics and prior-run summaries. Identity values remain in the private catalogue/checkpoint, not in these aggregate statistics. The manifest still contains document paths, so keep it private.
 
 [Three-model benchmark and limitations](docs/benchmarks/2026-09-18.md)
+
+If some documents fail, choose **Retry failed documents**. It retries only those files using the model currently selected in the sidebar. You can keep the same model to resume cached sections or choose another installed model for fresh discovery. Successful outputs are retained. Retry statistics describe that attempt; the results list also includes earlier successes. The private manifest links to an immutable record of the previous attempt.

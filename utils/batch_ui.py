@@ -9,7 +9,7 @@ from time import perf_counter
 
 import streamlit as st
 
-from utils.batch import digest, process_batch, scan_folder
+from utils.batch import digest, process_batch, retry_failed, scan_folder
 from utils.document_formats import DOCUMENT_EXTENSIONS
 
 
@@ -31,6 +31,8 @@ def draw_stats(stats, elapsed=None):
     totals, tokens = stats['totals'], stats['tokens']
     seconds = int(stats['elapsed_seconds'] if elapsed is None else elapsed)
     st.write(f"{stats['stage']} · {stats['model']}")
+    if stats.get('retry_of'):
+        st.caption('Statistics below cover this retry attempt. Earlier successful documents are retained.')
     cards = st.columns(4)
     cards[0].metric('Elapsed', f'{seconds // 60}:{seconds % 60:02d}')
     cards[1].metric('Documents completed', f"{totals['completed']} / {totals['documents']}")
@@ -58,13 +60,14 @@ def draw_stats(stats, elapsed=None):
                   for name, row in stats['files'].items()], hide_index=True)
 
 
-def start_job(files, **kwargs):
+def start_job(files=None, *, previous=None, **kwargs):
     """Keep inference off the UI thread; only the UI thread calls Streamlit."""
-    job = {'events': Queue(), 'started': perf_counter(), 'stats': None, 'logs': [], 'done': False}
+    job = {'events': Queue(), 'started': perf_counter(), 'stats': None, 'logs': [], 'done': False, 'previous': previous}
     def worker():
         try:
-            result = asyncio.run(process_batch(
-                files, **kwargs, progress=lambda value: job['events'].put(('log', value)),
+            runner, selection = (retry_failed, previous) if previous else (process_batch, files)
+            result = asyncio.run(runner(
+                selection, **kwargs, progress=lambda value: job['events'].put(('log', value)),
                 on_update=lambda value: job['events'].put(('stats', value))))
             result['seconds'] = round(perf_counter() - job['started'], 1)
             job['events'].put(('result', result))
@@ -90,6 +93,8 @@ def monitor_job(job):
                 job['done'] = True
             else:
                 job['error'], job['done'] = value, True
+                if job.get('previous'):
+                    st.session_state['batch_result'] = job['previous']
         except Empty:
             pass
         if perf_counter() - last_render >= 0.5 or job['done']:
@@ -171,8 +176,22 @@ def render_batch(dirs):
                 st.session_state['batch_job'] = job
             except Exception as error:
                 st.error(f'Processing stopped: {error}. Completed sections are saved; run again to resume.')
+    previous = st.session_state.get('batch_result')
+    if previous and previous['failed']:
+        retry_model = st.session_state.get('_ollama_model', 'gemma4:e4b')
+        st.caption(f"Retry failed files with {retry_model}. Change the model in the sidebar to try another installed model.")
+        if st.button('Retry failed documents', disabled=active):
+            if st.session_state.get('_backend') != 'ollama':
+                st.error('Select Local Ollama before retrying.')
+            else:
+                job = start_job(previous=previous, secure=dirs['secure'], model=retry_model,
+                                base_url=st.session_state.get('_ollama_url', 'http://localhost:11434'))
+                st.session_state['batch_job'] = job
+                st.session_state.pop('batch_result', None)
     if job and not job['done']:
         monitor_job(job)
+        if not job.get("error"):
+            st.rerun()
     result = st.session_state.get('batch_result')
     if job and job.get('error') and job.get('stats'):
         draw_stats(job['stats'])
@@ -183,7 +202,7 @@ def render_batch(dirs):
                  f"{result['reused']} already complete · {result['seconds']} seconds")
         st.code(result['output'], language=None)
         if result['failed']:
-            st.error('Failed documents were not exported in this run. Fix the errors and run again to resume.')
+            st.error('These documents failed. Correct the cause, then use Retry failed documents above. Successful outputs are retained.')
             st.table([{'File': name, 'Error': error} for name, error in result['failed'].items()])
         for index, path in enumerate(result['completed']):
             source = Path(path)

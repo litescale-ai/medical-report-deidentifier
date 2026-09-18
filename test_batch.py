@@ -5,13 +5,47 @@ from pathlib import Path
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from utils.batch import chunks, process_batch, scan_folder
+from utils.batch import chunks, process_batch, retry_failed, scan_folder
 from utils.document_formats import extract_document
 
 TEXT = 'Patient: Alex Example. HPCSA MP 0723444. Practice No. 1270753. Tel: 0215550123. Dose 5 mg.\nHome address: 12 Fiction Road, Testville, 8001'
 ENTITY = dict(canonical_name='Alex Example', entity_type='PATIENT', variations=['Alex Example'], relationship_context='')
 
 class BatchTest(unittest.IsolatedAsyncioTestCase):
+    async def test_retry_failed_with_same_then_different_model_preserves_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'input'
+            root.mkdir()
+            files = []
+            for index in range(3):
+                source = root / f'{index}.txt'
+                source.write_text(f'Document {index}\n' + TEXT)
+                files.append(source)
+            secure = Path(directory) / 'secure'
+            with patch('utils.batch.discover_names', AsyncMock(side_effect=[[ENTITY], RuntimeError('offline'), RuntimeError('offline')])):
+                initial = await process_batch(files, root=root, output=Path(directory) / 'output',
+                                              secure=secure, model='first', model_revision='one')
+            original = Path(initial['completed'][0])
+            original_bytes, original_mtime = original.read_bytes(), original.stat().st_mtime_ns
+            with patch('utils.batch.discover_names', AsyncMock(side_effect=[[ENTITY], RuntimeError('offline')])) as model:
+                same = await retry_failed(initial, secure=secure, model='first', model_revision='one')
+            self.assertEqual(model.await_count, 2)
+            self.assertEqual(len(same['completed']), 2)
+            self.assertEqual(len(same['failed']), 1)
+            parent = Path(same['stats']['retry_of'])
+            self.assertNotEqual(parent, Path(same['manifest']))
+            self.assertEqual(json.loads(parent.read_text())['totals']['failed'], 2)
+            with patch('utils.batch.discover_names', AsyncMock(return_value=[ENTITY])) as model:
+                changed = await retry_failed(same, secure=secure, model='second', model_revision='two')
+            self.assertEqual(model.await_count, 1)
+            self.assertEqual(model.call_args.kwargs['model'], 'second')
+            self.assertEqual(len(changed['completed']), 3)
+            self.assertFalse(changed['failed'])
+            self.assertEqual(changed['stats']['totals']['documents'], 1)
+            self.assertEqual(changed['stats']['batch_completed'], 3)
+            self.assertEqual(original.read_bytes(), original_bytes)
+            self.assertEqual(original.stat().st_mtime_ns, original_mtime)
+
     async def test_live_manifest_measured_tokens_and_cached_resume(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'input'

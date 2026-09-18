@@ -174,7 +174,7 @@ def prepare_source(source, cache_dir, fingerprint):
 
 async def process_batch(files, *, root, output, secure, model='gemma4:e4b',
                         base_url='http://localhost:11434', progress=lambda message: None,
-                        model_revision=None, on_update=None):
+                        model_revision=None, on_update=None, retry_of=None):
     """Discover sequentially, then redact using a shared map. Fail files explicitly.
 
     Checkpoints are private and keyed by source bytes, endpoint, model revision,
@@ -215,6 +215,9 @@ async def process_batch(files, *, root, output, secure, model='gemma4:e4b',
     metrics = BatchStats([str(source.relative_to(root)) for source in sources],
                          model=model, revision=model_revision, output=output, manifest=manifest_path,
                          save=save_private, previous=read_json(manifest_path, {}), emit=on_update)
+    if retry_of:
+        metrics.data["retry_of"] = str(retry_of)
+        metrics.publish()
     async def heartbeat():
         while True:
             await asyncio.sleep(1)
@@ -322,7 +325,7 @@ async def process_batch(files, *, root, output, secure, model='gemma4:e4b',
                     os.unlink(temporary)
         final_stats = metrics.finish('completed_with_errors' if failures else 'completed')
         return {'stats': final_stats, 'manifest': str(manifest_path), 'completed': completed, 'failed': failures, 'reused': reused,
-                'output': str(output), 'model': model, 'model_revision': model_revision}
+                'root': str(root), 'output': str(output), 'model': model, 'model_revision': model_revision}
     except BaseException as error:
         metrics.finish('interrupted' if isinstance(error, asyncio.CancelledError) else 'failed', str(error))
         raise
@@ -330,3 +333,27 @@ async def process_batch(files, *, root, output, secure, model='gemma4:e4b',
         ticker.cancel()
         with suppress(asyncio.CancelledError):
             await ticker
+
+
+async def retry_failed(previous, *, secure, model, base_url='http://localhost:11434',
+                       progress=lambda message: None, on_update=None, model_revision=None):
+    """Retry only failed sources. Retain successful exports and an immutable attempt record."""
+    from uuid import uuid4
+    if not previous['failed']:
+        raise ValueError('There are no failed documents to retry.')
+    parent = Path(previous['manifest']).with_name(f"attempt-{uuid4().hex}.json")
+    save_private(parent, previous['stats'])
+    root = Path(previous['root'])
+    result = await process_batch(
+        [root / name for name in previous['failed']], root=root, output=previous['output'],
+        secure=secure, model=model, base_url=base_url, progress=progress, on_update=on_update,
+        model_revision=model_revision, retry_of=parent,
+    )
+    result['completed'] = list(dict.fromkeys(previous['completed'] + result['completed']))
+    result['stats']['retained_completed'] = previous['completed']
+    result['stats']['batch_completed'] = len(result['completed'])
+    result['stats']['batch_failed'] = len(result['failed'])
+    save_private(Path(result['manifest']), result['stats'])
+    if on_update:
+        on_update(result['stats'])
+    return result
