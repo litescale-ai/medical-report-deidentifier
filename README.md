@@ -200,7 +200,7 @@ and `GEMINI_API_KEY`, or an explicit UI selection. Fast document mode always use
 Run the focused offline regression checks with:
 
 ```bash
-python -m unittest test_pipeline test_bootstrap test_document_formats test_identifier_removal test_batch test_batch_ui
+python -m unittest test_pipeline test_bootstrap test_document_formats test_identifier_removal test_batch test_batch_ui test_reidentification test_reidentification_ui
 ```
 
 ---
@@ -227,8 +227,23 @@ folder. Without arguments, the CLI reads `data/input` recursively and writes to
 `data/output/documents`. `python main.py --chronology` runs the original combined
 chronology workflow on `data/input` instead.
 
-#### 2. Re-identify a Returned Report:
-When a recipient returns an edited/processed report containing hashes, pass the file to the re-identification script:
+#### 2. Re-identify returned documents
+
+In the **Re-identify Returned Report** tab, upload several returned files or choose **Folder** and include subfolders. Click **Restore documents**. Guardian reads the local private identity catalogue once, restores known pseudonyms without a model, and writes separate outputs with the same formats and folder structure. Download individual files or the combined ZIP.
+
+Progress shows processed documents, failures, elapsed time and restored pseudonym occurrences. The result links to a private manifest. Use **Retry failed restorations** after correcting a source file or adding the missing original catalogue mappings. A full rerun reuses unchanged, verified outputs. User-edited outputs are never overwritten.
+
+Files containing unknown Guardian pseudonyms or pseudonyms left after editing are withheld and reported. Phone/practice numbers, email and addresses replaced with removal markers remain removed because they have no reverse mapping. Names and other values represented by reversible pseudonyms can be restored. Keep restored files and ZIP downloads private. This mode restores supported text surfaces; it cannot reconstruct deleted values or recover tokens that a recipient changed beyond recognition.
+
+For an entire folder, including subfolders:
+
+```bash
+python reidentify.py "/path/to/returned folder" --output "/path/to/restored folder"
+```
+
+Use `--no-recursive` to exclude subfolders. If you omit `--output`, Guardian creates a sibling folder ending in `-reidentified`. Use `--secure-dir` only when your private catalogue is stored elsewhere. The command returns a nonzero exit code if any documents fail.
+
+For one file:
 ```bash
 python reidentify.py data/output/shareable_pseudonymised_report.txt -o data/output/final_identified_report.txt
 ```

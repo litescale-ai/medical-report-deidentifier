@@ -29,3 +29,7 @@ src-tauri/medical_deidentifier_backend-*
 test_pdf*
 # Adjacent output folders created by the folder picker
 data/*-deidentified/
+
+# Private returned uploads and adjacent restored output folders
+data/returned/
+data/*-reidentified/

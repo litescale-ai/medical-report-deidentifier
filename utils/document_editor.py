@@ -10,7 +10,7 @@ Also provides a synthesis summary writer for the companion output file.
 import os
 import json
 import re
-from utils.identifier_rules import replacement_pattern
+from utils.identifier_rules import replacement_pattern, replace_data
 from utils.document_formats import (DOCUMENT_EXTENSIONS, TEXT_EXTENSIONS, HtmlText,
     read_text, replace_strings, all_docx_paragraphs, presentation_paragraphs)
 from typing import Optional
@@ -446,7 +446,9 @@ def deidentify_document(
         return deidentify_pptx(input_path, output_path, replacement_map)
     elif ext in TEXT_EXTENSIONS:
         text = read_text(input_path)
-        if ext in {".html", ".htm"}:
+        if ext == ".json":
+            text = json.dumps(replace_data(json.loads(text), replacement_map), ensure_ascii=False, indent=2)
+        elif ext in {".html", ".htm"}:
             text = HtmlText(text).replace(replacement_map)
         else:
             text = replace_strings([text], replacement_map)[0]

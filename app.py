@@ -16,13 +16,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from utils.document_formats import DOCUMENT_EXTENSIONS
 from utils.helpers import get_data_dirs, save_json, load_json
 from utils.document_editor import (
-    deidentify_document, write_synthesis_summary, reidentify_document,
+    deidentify_document, write_synthesis_summary,
 )
 from agents.transcriber import transcribe_media
 from agents.cataloguer import catalogue_transcripts
 from agents.deidentifier import discover_pii_entities, perform_deidentification
-from reidentify import reidentify_report
 from utils.batch_ui import render_batch
+from utils.reidentification_ui import render_reidentification
 
 # Page Config
 st.set_page_config(
@@ -543,72 +543,7 @@ with tab_deidentify:
 # TAB 2: RE-IDENTIFY RETURNED REPORT
 # ==========================================
 with tab_reidentify:
-    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-    st.subheader("Reverse Pseudonymisation Mapping")
-    st.write(
-        "Upload a completed or edited report returned by the external clinician/recipient. "
-        "The system will automatically scan the text for pseudonym hashes, consult the private "
-        "local `Identity Catalogue`, and restore the patient's original PII details."
-    )
-
-    returned_file = st.file_uploader(
-        "Upload returned document (TXT, MD, HTML, XLSX, DOCX, PDF, PPTX, or JSON)",
-        key="returned_file",
-        type=sorted(ext.lstrip(".") for ext in DOCUMENT_EXTENSIONS),
-    )
-
-    if returned_file:
-        file_ext = os.path.splitext(returned_file.name)[1].lower()
-        temp_path = os.path.join(dirs["output"], f"temp_returned{file_ext}")
-        with open(temp_path, "wb") as f:
-            f.write(returned_file.getbuffer())
-
-        if st.button("🔓 Restore Original Identity Details", use_container_width=True):
-            try:
-                is_document = file_ext in DOCUMENT_EXTENSIONS - {".txt", ".json"}
-
-                if is_document:
-                    # Use document editor for format-preserved re-identification
-                    cat_path = os.path.join(dirs["secure"], "identity_catalogue.json")
-                    identity_catalogue = load_json(cat_path)
-                    if not identity_catalogue:
-                        st.error("Identity Catalogue not found. Run the de-identification pipeline first.")
-                    else:
-                        out_name = f"reidentified_{os.path.basename(returned_file.name)}"
-                        out_path = os.path.join(dirs["output"], out_name)
-                        reidentify_document(temp_path, out_path, identity_catalogue)
-
-                        st.success("Re-identification successful! Document formatting preserved.")
-
-                        mime = mimetypes.guess_type(out_name)[0] or "application/octet-stream"
-                        with open(out_path, "rb") as df:
-                            st.download_button(
-                                label=f"💾 Download Re-identified {file_ext.upper()} Report",
-                                data=df.read(),
-                                file_name=out_name,
-                                mime=mime,
-                                use_container_width=True,
-                            )
-                else:
-                    # Text/JSON re-identification (existing flow)
-                    reidentified_content = reidentify_report(temp_path)
-
-                    st.success("Re-identification successful!")
-
-                    st.write("### 📄 Re-identified Clinical Record Preview")
-                    st.text_area("Final Identified Report", value=reidentified_content, height=400)
-
-                    st.download_button(
-                        label="💾 Download Re-identified Final Report (.txt)",
-                        data=reidentified_content,
-                        file_name="final_identified_report.txt",
-                        mime="text/plain",
-                        use_container_width=True,
-                    )
-
-            except Exception as e:
-                st.error(f"Re-identification failed: {e}")
-    st.markdown('</div>', unsafe_allow_html=True)
+    render_reidentification(dirs)
 
 # ==========================================
 # TAB 3: PRIVATE IDENTITY CATALOGUE (SECURE)
