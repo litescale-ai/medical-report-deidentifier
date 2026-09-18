@@ -1,4 +1,4 @@
-"""Local removal rules for labelled registrations and telephone numbers.
+"""Local removal rules for addresses, email, registrations and telephone numbers.
 
 Scan original extracted text as well as model summaries: a summary can omit a
 header. Removal markers deliberately have no reverse identity mapping.
@@ -17,6 +17,16 @@ _PHONE = re.compile(
     r'(?<![\w\d])(?:\+\d(?:[ \t().-]*\d){7,14}|'
     r'\(?0[1-8]\d\)?(?:[ \t-]*\d){7})(?!\d)')
 
+# Consume a labelled address line, stopping before another field on that line.
+# Unlabelled addresses and continuation lines are also requested from the model.
+_ADDRESS = re.compile(
+    r'(?im)\b(?:(?:postal|physical|residential|home|work|business|practice|street|patient|email|e-mail)\s+)?'
+    r'address[ \t]*:[ \t]*(?:\n[ \t]*)?'
+    r'(?P<address>[^\r\n]+?)(?=[ \t]+(?:Tel(?:ephone)?|Phone|Mobile|Fax|Email|Patient|Doctor|'
+    r'Assessment|Dose|BP|Date|HPCSA|Practice)[ \t]*:|$)')
+
+_EMAIL = re.compile(r"(?<![\w.+-])[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}\b")
+
 
 def text_values(data):
     """Walk extracted transcripts or report JSON without joining unrelated fields."""
@@ -34,6 +44,10 @@ def text_values(data):
 def identifier_replacements(data):
     replacements = {}
     for text in text_values(data):
+        for match in _ADDRESS.finditer(text):
+            address = match['address'].strip()
+            if address and '[ADDRESS REMOVED]' not in address and not re.match(r'^[A-Za-z ]+:', address):
+                replacements[address] = '[ADDRESS REMOVED]'
         for match in _LABELLED.finditer(text):
             number = match['number']
             count = sum(char.isdigit() for char in number)
@@ -42,6 +56,8 @@ def identifier_replacements(data):
             valid_length = 7 <= count <= 15 if phone else 5 <= count <= 13
             if valid_length:
                 replacements[number] = '[PHONE REMOVED]' if phone else '[REGISTRATION REMOVED]'
+        for match in _EMAIL.finditer(text):
+            replacements[match.group()] = '[EMAIL REMOVED]'
         for match in _PHONE.finditer(text):
             replacements.setdefault(match.group(), '[PHONE REMOVED]')
     return replacements

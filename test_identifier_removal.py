@@ -11,6 +11,7 @@ from utils.document_formats import extract_document
 TEXT = ('HPCSA MP 0723444\nPractice No. 1270753\n'
         'Tel: (021) 555-0123\nMobile: +27 82 555 0199\n'
         'Fax: 0215550124\nPhone: +44 20 7946 0958\n'
+        'Residential address: 12 Fiction Road, Cape Town, 8001\nEmail: person@example.test\n'
         'Assessment: improving. Dose 5 mg. BP 120/80. Date 2024-01-02.\n')
 NUMBERS = ('0723444', '1270753', '(021) 555-0123', '+27 82 555 0199', '0215550124', '+44 20 7946 0958')
 
@@ -18,6 +19,10 @@ class IdentifierRemovalTest(unittest.TestCase):
     def assert_removed(self, text):
         for number in NUMBERS:
             self.assertNotIn(number, text)
+        self.assertNotIn('person@example.test', text)
+        self.assertNotIn('12 Fiction Road', text)
+        self.assertNotIn('Cape Town', text)
+        self.assertNotIn('8001', text)
         self.assertIn('Dose 5 mg. BP 120/80. Date 2024-01-02.', text)
 
     def test_numbers_removed_without_model_discovery(self):
@@ -35,6 +40,27 @@ class IdentifierRemovalTest(unittest.TestCase):
         with patch('agents.deidentifier.generate_pseudonym_hash', side_effect=['PATIENT_TEST', 'DOCTOR_TEST']):
             result, _, _ = perform_deidentification({'text': 'Alex "Example" met PATIENT.'}, entities)
         self.assertEqual(result['text'], 'PATIENT_TEST met DOCTOR_TEST.')
+
+    def test_address_field_stops_before_clinical_fields_and_skips_empty_fields(self):
+        text = 'Postal address:\nPO Box 123, Testville, 8001\nHome address: 12 Fiction Road Dose: 5 mg\nAddress:\nAssessment: improving'
+        result, _, _ = perform_deidentification({'text': text}, [])
+        self.assertNotIn('PO Box 123', result['text'])
+        self.assertNotIn('12 Fiction Road', result['text'])
+        self.assertIn('Dose: 5 mg', result['text'])
+        self.assertIn('Assessment: improving', result['text'])
+
+    def test_redacted_pdf_address_does_not_absorb_the_next_header(self):
+        import pymupdf
+        from utils.identifier_rules import identifier_replacements
+        text = 'Address: 12 Fiction Road\nHPCSA MP 0723444\nPractice No. 1270753\nDose: 5 mg'
+        with tempfile.TemporaryDirectory() as directory:
+            source, target = Path(directory) / 'source.pdf', Path(directory) / 'target.pdf'
+            with pymupdf.open() as pdf:
+                pdf.new_page().insert_text((40, 60), text)
+                pdf.save(source)
+            _, _, replacements = perform_deidentification({}, [], source_data=extract_document(source))
+            deidentify_document(str(source), str(target), replacements)
+            self.assertEqual(identifier_replacements(extract_document(target)), {})
 
     def test_registration_variants_and_unlabelled_phones(self):
         text = ('HPCSA: MP0723444; Practice Number: 1270753; Pr. No. 7654321; '

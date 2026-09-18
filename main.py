@@ -176,4 +176,39 @@ async def run_pipeline():
         print(f"Error preparing final output files: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(run_pipeline())
+    import argparse
+    from pathlib import Path
+    from utils.batch import scan_folder, process_batch
+
+    parser = argparse.ArgumentParser(description="De-identify a folder locally with Ollama.")
+    parser.add_argument("--input", type=Path, help="Folder of source documents; defaults to data/input")
+    parser.add_argument("--output", type=Path, help="Separate output folder")
+    parser.add_argument("--no-recursive", action="store_true", help="Exclude subfolders")
+    parser.add_argument("--model", help="Installed Ollama model")
+    parser.add_argument("--chronology", action="store_true", help="Run the original chronology workflow on data/input")
+    args = parser.parse_args()
+    load_dotenv()
+    if args.chronology:
+        if args.input or args.output or args.model or args.no_recursive:
+            parser.error("--chronology uses the existing data/input workflow and environment model settings")
+        asyncio.run(run_pipeline())
+    else:
+        dirs = get_data_dirs()
+        root = (args.input or Path(dirs['input'])).expanduser().resolve()
+        output = args.output or (root.with_name(root.name + '-deidentified') if args.input else Path(dirs['output']) / 'documents')
+        try:
+            files, skipped = scan_folder(root, output, recursive=not args.no_recursive)
+            print(f"Found {len(files)} documents; skipped {len(skipped)} unsupported files or links.")
+            for name in skipped:
+                print(f"Skipped: {name}")
+            result = asyncio.run(process_batch(
+                files, root=root, output=output, secure=dirs['secure'],
+                model=args.model or os.getenv('OLLAMA_MODEL', 'gemma4:e4b'),
+                base_url=os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434'), progress=print,
+            ))
+            print(f"Completed: {len(result['completed'])}; failed: {len(result['failed'])}; reused: {result['reused']}")
+            print(f"Output: {result['output']}")
+            sys.exit(1 if result['failed'] else 0)
+        except Exception as error:
+            print(f"Processing stopped: {error}", file=sys.stderr)
+            sys.exit(1)

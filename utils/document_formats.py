@@ -190,10 +190,12 @@ def extract_document(path):
         with pymupdf.open(path) as document:
             sections = []
             for page in document:
-                text = page.get_text()
+                # Redaction inserts replacement spans after the original content stream.
+                # Read by page position so address labels stay with their own values.
+                text = page.get_text(sort=True)
                 # OCR each image-only page locally, including mixed scanned/text PDFs.
                 if not text.strip() and page.get_images():
-                    text = page.get_text(textpage=page.get_textpage_ocr(language="eng", full=True))
+                    text = page.get_text(textpage=page.get_textpage_ocr(language="eng", full=True), sort=True)
                 sections.append((f"page {page.number + 1}", text))
             return sections
     return None

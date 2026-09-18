@@ -20,7 +20,7 @@ async def discover_pii_entities(chronology_data: dict, api_key: str = None, back
         "You are an expert medical data privacy officer. Your task is to analyze chronological medical reports "
         "and discover every Personally Identifiable Information (PII) entity.\n"
         "You must:\n"
-        "1. Identify every individual (patients, parents, doctors, relatives, therapists) and organizations/locations.\n"
+        "1. Identify every individual (patients, parents, doctors, relatives, therapists) and organizations/locations, including street, residential and postal addresses with street numbers, cities and postal codes.\n"
         "2. Specify their entity type ('PATIENT', 'DOCTOR', 'RELATIVE', 'LOCATION', 'FACILITY', or 'ORGANIZATION').\n"
         "3. Document their exact relationship role.\n"
         "4. Critical: List all variations/forms/aliases of their name that appear in the text (e.g., full name, first name, last name with title, initials) so they can be replaced deterministically."
@@ -40,7 +40,7 @@ async def discover_pii_entities(chronology_data: dict, api_key: str = None, back
     return data["entities"]
 
 def perform_deidentification(chronology_data: dict, discovered_entities: list[dict], source_data=None) -> tuple[dict, dict, dict]:
-    """Pseudonymise a report and remove numbers found in it and source_data.
+    """Pseudonymise a report and remove rule-matched identifiers found in it and source_data.
     
     Returns:
         tuple containing:
@@ -48,7 +48,7 @@ def perform_deidentification(chronology_data: dict, discovered_entities: list[di
         - The secure identity catalogue mapping hash -> real details
         - The replacement map (real PII string -> pseudonym or removal marker)
     """
-    number_removals = identifier_replacements([source_data, chronology_data, discovered_entities])
+    rule_removals = identifier_replacements([source_data, chronology_data, discovered_entities])
     identity_catalogue = {}
     replacement_map = {} # real_variation -> hash
     
@@ -79,10 +79,10 @@ def perform_deidentification(chronology_data: dict, discovered_entities: list[di
         # Ensure canonical name is also mapped
         replacement_map[canon_name.strip()] = pseudonym_hash
 
-    # Number rules override model aliases and do not enter the reversible catalogue.
-    replacement_map.update(number_removals)
+    # Local removal rules override model aliases and do not enter the reversible catalogue.
+    replacement_map.update(rule_removals)
     deidentified_data = replace_data(chronology_data, replacement_map)
-    # A model can include a telephone number in an entity name or relationship.
-    # Keep it out of both restored documents and the shareable relationship legend.
-    identity_catalogue = replace_data(identity_catalogue, number_removals)
+    # A model can include a telephone number or address in an entity name or relationship.
+    # Keep matched identifiers out of both restored documents and the shareable relationship legend.
+    identity_catalogue = replace_data(identity_catalogue, rule_removals)
     return deidentified_data, identity_catalogue, replacement_map

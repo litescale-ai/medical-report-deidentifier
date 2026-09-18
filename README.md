@@ -56,7 +56,8 @@ medical-report-deidentifier/
    appear while you type. Follow any Homebrew prompts and leave the window open
    while software and the model download. The first setup can take several minutes.
 4. Guardian opens in your browser. Upload your documents, leave **Local Ollama**
-   selected, and click **Execute Pipeline**. Download the results when it finishes.
+   selected, choose **De-identify documents only (faster)**, and click
+   **De-identify documents**. Download the results when it finishes.
 
 **Next time:** double-click **Guardian.command** on your Desktop. It starts the
 local model service if needed and opens the app. It does not reinstall packages or
@@ -89,6 +90,38 @@ Guardian.command. For Ollama installed outside Homebrew, update it from
 [ollama.com/download](https://ollama.com/download) and restart your Mac. The
 launcher never stops a server started by another terminal or app.
 
+### Process a folder of documents
+
+1. Leave **Local Ollama** selected. Choose **De-identify documents only (faster)**.
+2. Select **Folder**, then **Choose folder…** on a Mac, or paste the folder path.
+3. Leave **Include subfolders** checked. Review the file list and skipped files.
+4. Use the suggested separate output folder, or enter another one.
+5. Click **De-identify documents**. Results preserve the folder structure and
+   document formats. Originals are never overwritten.
+
+Run the same selection again to resume after an interruption. Completed model
+requests are reused; changed files are reprocessed. Existing outputs edited outside
+Guardian are not overwritten. Choose a new output folder when switching models.
+Private checkpoints and identity mappings stay in `data/secure`, not the output
+folder. Final output checks withhold files that still contain recognised phone,
+registration or labelled-address values. This check does not prove that the model
+found every identifier; review the documents before sharing. File and folder names
+are preserved and may themselves contain identifying information.
+
+The model selector also offers `gemma4:e2b` and `qwen3.5:2b`. Download the desired
+model once in Terminal before selecting it:
+
+```bash
+ollama pull gemma4:e2b
+ollama pull qwen3.5:2b
+```
+
+For a reproducible synthetic 20-document, 60-page comparison, use a fresh folder:
+
+```bash
+python scripts/benchmark_local.py --output /tmp/guardian-model-comparison
+```
+
 ### Existing checkouts and Linux
 
 From a clean checkout, run `bash bootstrap.sh` to install/update or
@@ -110,7 +143,15 @@ OLLAMA_BASE_URL="http://127.0.0.1:11434/v1"
 
 TXT, Markdown, HTML, XLSX, DOCX, PPTX and searchable PDF files are read locally,
 without asking a model to transcribe the same text again. Image-only PDF pages
-use local Tesseract OCR. Chronology and entity discovery use Ollama's native
+use local Tesseract OCR. The default document mode extracts text, removes labelled
+addresses and recognised numbers locally, then asks Ollama only for identifying
+names, addresses and other phrases. It does not generate a chronology. Requests
+use overlapping chunks of at most 6,000 characters, one request at a time.
+Repeated text and completed requests are cached privately; OCR layers are reused
+for extraction and PDF redaction. Select **Create clinical chronology** when you
+also need the original combined report or media-transcription workflow.
+
+Chronology and entity discovery use Ollama's native
 structured output with schema validation and thinking disabled. Discovery reads
 the original extracted text as well as the chronology, so omitted summary details
 are still considered. Requests do not retry or fall back to a cloud service.
@@ -122,12 +163,13 @@ more time. Invalid or truncated responses stop processing rather than becoming
 an empty report. Image, audio and video transcription retain the selected
 backend's SDK media path; SDK cleanup can extend the configured deadline.
 
-Phone numbers and labelled HPCSA, practice and PCNS registration numbers are
+Email addresses, labelled address fields, phone numbers and labelled HPCSA, practice and PCNS registration numbers are
 removed by local rules, independently of model discovery. The rules inspect the
 original extraction as well as the chronology. They recognise South African
 phone formats, international numbers beginning with `+`, and labelled phone/fax
-numbers. Removed numbers have no reversible mapping and remain removed when
-names are restored. This requires readable text or accurate OCR; unrecognised
+numbers. These rule-based removals have no reversible mapping and remain removed when
+names are restored. The local model also looks for unlabelled addresses and
+address components such as street numbers, cities and postal codes. This requires readable text or accurate OCR; unrecognised
 formats and numbers in images still need review. Dates, doses and clinical
 measurements are not removed merely because they contain digits.
 
@@ -152,13 +194,13 @@ PDF editing reuses page style data and avoids duplicate replacements for
 full names and overlapping aliases. Existing identity mappings are retained
 when processing another batch, so earlier reports can still be restored.
 
-The optional Gemini mode requires `AGENT_BACKEND="gemini"` and `GEMINI_API_KEY` for
-the CLI, or an explicit selection in the UI.
+The optional chronology workflow supports Gemini with `AGENT_BACKEND="gemini"`
+and `GEMINI_API_KEY`, or an explicit UI selection. Fast document mode always uses Ollama.
 
 Run the focused offline regression checks with:
 
 ```bash
-python -m unittest test_pipeline.py test_bootstrap.py test_document_formats.py
+python -m unittest test_pipeline test_bootstrap test_document_formats test_identifier_removal test_batch test_batch_ui
 ```
 
 ---
@@ -174,12 +216,16 @@ from that folder, the shortcut reopens it without starting a second server.
 
 ### Option B: The Command Line Interface (CLI)
 
-#### 1. Ingest & De-identify Files:
-Place your raw medical records (PDFs, audio recordings, text, etc.) into `data/input/` and run the orchestrator:
+#### 1. De-identify a folder
+
 ```bash
-python main.py
+python main.py --input "/path/to/source folder" --output "/path/to/results" --model gemma4:e4b
 ```
-This will populate the shareable files in `data/output/` and the private mappings in `data/secure/`.
+
+Subfolders are included by default. Use `--no-recursive` for only the selected
+folder. Without arguments, the CLI reads `data/input` recursively and writes to
+`data/output/documents`. `python main.py --chronology` runs the original combined
+chronology workflow on `data/input` instead.
 
 #### 2. Re-identify a Returned Report:
 When a recipient returns an edited/processed report containing hashes, pass the file to the re-identification script:
