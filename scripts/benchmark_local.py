@@ -90,7 +90,7 @@ async def main(args):
             if '120/80' not in text or '5 mg' not in text or 'improving mobility' not in text:
                 damaged_clinical.append(relative)
         row = {'model': model, 'revision': result['model_revision'], 'warmup_seconds': round(warmup, 2),
-               'seconds': round(elapsed, 2), 'completed': len(result['completed']),
+               'seconds': round(elapsed, 2), 'stats': result['stats'], 'completed': len(result['completed']),
                'failed': result['failed'], 'reused': result['reused'], 'misses': misses,
                'checked_identifiers': checked_identifiers, 'damaged_clinical': damaged_clinical}
         report['models'].append(row)

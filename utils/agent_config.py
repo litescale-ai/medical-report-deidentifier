@@ -92,6 +92,7 @@ async def generate_structured(
     gemini_model: str | None = None,
     ollama_model: str | None = None,
     ollama_base_url: str | None = None,
+    metrics_callback=None,
 ) -> dict:
     """Generate and validate one structured response, without a local tool-call loop.
 
@@ -140,6 +141,21 @@ async def generate_structured(
         raise RuntimeError("Cannot reach Ollama. Check the server URL and that Ollama is running.") from None
     except ValueError:
         raise ValueError("Ollama returned an invalid JSON response.") from None
+
+    if isinstance(result, dict) and metrics_callback:
+        def count(key):
+            value = result.get(key)
+            return value if isinstance(value, (int, float)) and value >= 0 else None
+        def seconds(key):
+            value = count(key)
+            return value / 1_000_000_000 if value is not None else None
+        output_tokens, generation = count("eval_count"), seconds("eval_duration")
+        metrics_callback({
+            "input_tokens": count("prompt_eval_count"), "output_tokens": output_tokens,
+            "generation_seconds": generation, "prompt_seconds": seconds("prompt_eval_duration"),
+            "load_seconds": seconds("load_duration"), "request_seconds": perf_counter() - started,
+            "tokens_per_second": output_tokens / generation if output_tokens is not None and generation else None,
+        })
 
     if not isinstance(result, dict) or result.get("done") is not True or result.get("done_reason") != "stop":
         raise ValueError("Ollama returned an incomplete response. No report was produced; try a smaller document.")

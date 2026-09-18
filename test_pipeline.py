@@ -15,6 +15,20 @@ from agents.transcriber import transcribe_media, ExtractedTranscript
 
 
 class LocalPipelineTest(unittest.IsolatedAsyncioTestCase):
+    async def test_native_ollama_metrics_use_nanoseconds_and_missing_is_unknown(self):
+        from utils.batch import discover_names
+        for telemetry, expected in [({'prompt_eval_count': 64, 'eval_count': 48, 'eval_duration': 2_000_000_000}, 24), ({}, None)]:
+            def respond(request):
+                return httpx.Response(200, json={'done': True, 'done_reason': 'stop',
+                    'message': {'content': '{"entities": []}'}, **telemetry})
+            client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+            metrics = []
+            with patch('utils.agent_config.httpx.AsyncClient', return_value=client):
+                await discover_names('No names.', model='test', base_url='http://localhost:11434', metrics_callback=metrics.append)
+            self.assertEqual(len(metrics), 1)
+            self.assertEqual(metrics[0]['tokens_per_second'], expected)
+            self.assertGreater(metrics[0]['request_seconds'], 0)
+
     async def test_total_deadline_cancels_a_stalled_request(self):
         cancelled = asyncio.Event()
         async def respond(request):

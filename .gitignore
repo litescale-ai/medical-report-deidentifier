@@ -27,3 +27,5 @@ build/medical_deidentifier/
 dist/
 src-tauri/medical_deidentifier_backend-*
 test_pdf*
+# Adjacent output folders created by the folder picker
+data/*-deidentified/

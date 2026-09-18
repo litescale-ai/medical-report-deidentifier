@@ -1,5 +1,6 @@
 """Folder processing proofs use real files, with only model inference replaced."""
 import tempfile
+import json
 from pathlib import Path
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -11,6 +12,43 @@ TEXT = 'Patient: Alex Example. HPCSA MP 0723444. Practice No. 1270753. Tel: 0215
 ENTITY = dict(canonical_name='Alex Example', entity_type='PATIENT', variations=['Alex Example'], relationship_context='')
 
 class BatchTest(unittest.IsolatedAsyncioTestCase):
+    async def test_live_manifest_measured_tokens_and_cached_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'input'
+            root.mkdir()
+            source = root / 'report.txt'
+            source.write_text(TEXT)
+            updates = []
+            kwargs = dict(root=root, output=Path(directory) / 'output',
+                          secure=Path(directory) / 'secure', model_revision='test-model', on_update=updates.append)
+            async def measured_model(text, *, metrics_callback, **kwargs):
+                self.assertEqual(updates[-1]['status'], 'running')
+                self.assertEqual(updates[-1]['totals']['extracted'], 1)
+                self.assertEqual(updates[-1]['totals']['completed'], 0)
+                metrics_callback(dict(input_tokens=64, output_tokens=48, generation_seconds=2,
+                                      prompt_seconds=1, load_seconds=0.5, tokens_per_second=24))
+                return [ENTITY]
+            with patch('utils.batch.discover_names', measured_model):
+                result = await process_batch([source], **kwargs)
+            manifest = Path(result['manifest'])
+            saved = json.loads(manifest.read_text())
+            self.assertEqual(saved, result['stats'])
+            self.assertEqual(manifest.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(saved['status'], 'completed')
+            self.assertEqual(saved['tokens']['tokens_per_second'], 24)
+            self.assertEqual(saved['tokens']['input'], 64)
+            self.assertEqual(saved['totals']['words'], len(TEXT.split()))
+            self.assertEqual(saved['totals']['completed'], 1)
+            self.assertEqual(saved['totals']['identity_types']['PATIENT'], 1)
+            self.assertEqual(saved['totals']['identity_types']['ADDRESS'], 1)
+            self.assertNotIn('Alex Example', manifest.read_text())
+            with patch('utils.batch.discover_names', side_effect=AssertionError('No new inference')):
+                resumed = await process_batch([source], **kwargs)
+            self.assertEqual(resumed['stats']['tokens']['requests'], 0)
+            self.assertIsNone(resumed['stats']['tokens']['tokens_per_second'])
+            self.assertEqual(resumed['stats']['totals']['identities'], saved['totals']['identities'])
+            self.assertEqual(resumed['stats']['previous_runs'][-1]['tokens']['output'], 48)
+
     async def test_twenty_multipage_pdfs_resume_without_model_calls(self):
         import pymupdf
         with tempfile.TemporaryDirectory() as directory:
@@ -29,6 +67,7 @@ class BatchTest(unittest.IsolatedAsyncioTestCase):
             with patch('utils.batch.discover_names', AsyncMock(return_value=[ENTITY])) as model:
                 result = await process_batch(files, **kwargs)
             self.assertEqual(len(result['completed']), 20)
+            self.assertEqual(result['stats']['totals']['pages'], 60)
             self.assertFalse(result['failed'])
             self.assertEqual(model.await_count, 1)  # Identical text shares discovery, not twenty requests.
             for path in result['completed']:
@@ -54,6 +93,8 @@ class BatchTest(unittest.IsolatedAsyncioTestCase):
                 result = await process_batch([source], **kwargs)
             self.assertEqual(model.await_count, 2)
             self.assertIn('report.txt', result['failed'])
+            self.assertEqual(result['stats']['status'], 'completed_with_errors')
+            self.assertEqual(result['stats']['totals']['failed'], 1)
             self.assertFalse((output / 'report.txt').exists())
             with patch('utils.batch.discover_names', AsyncMock(return_value=[])) as model:
                 resumed = await process_batch([source], **kwargs)

@@ -238,3 +238,13 @@ Run the mathematical verification test locally in under 3 seconds:
 ```bash
 python verify_mock.py
 ```
+
+### Live progress and private run statistics
+
+During folder or file processing, Guardian shows a running timer, discovery and verified-export progress, document counts, PDF pages read, extracted words, unique identifiers grouped by type, failures, cached sections and Ollama input/output tokens. The document table updates while processing. Page counts apply to PDFs only; other formats do not have a reliable page count without rendering.
+
+Generation tokens per second uses Ollama's output-token count divided by its generation duration. It updates after each model response and excludes loading and prompt evaluation. Cached sections add no new tokens. Identifier counts describe discovered names and locally removed values, not a guarantee that every identity was detected.
+
+Each run saves a private `manifest.json` beside its resumable checkpoint under `data/secure/batches/`. The results screen displays its exact location. It records elapsed time, per-file status and counts, identity types, measured token statistics and prior-run summaries. Identity values remain in the private catalogue/checkpoint, not in these aggregate statistics. The manifest still contains document paths, so keep it private.
+
+[Three-model benchmark and limitations](docs/benchmarks/2026-09-18.md)

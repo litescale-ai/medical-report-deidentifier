@@ -33,6 +33,9 @@ class BatchUiTest(unittest.TestCase):
                 self.assertFalse(app.exception)
                 result = app.session_state['batch_result']
                 self.assertFalse(result['failed'])
+                self.assertTrue(Path(result['manifest']).exists())
+                self.assertTrue(any(item.label == 'Generation tokens/s' for item in app.metric))
+                self.assertTrue(any(item.label == 'Elapsed' for item in app.metric))
                 self.assertEqual(len(result['completed']), 1)
                 text = Path(result['completed'][0]).read_text()
                 self.assertNotIn('Alex Example', text)
