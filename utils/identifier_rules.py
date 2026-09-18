@@ -63,10 +63,16 @@ def identifier_replacements(data):
     return replacements
 
 
+def replacement_pattern(keys):
+    """Match whole identifiers so short names cannot alter words such as sleep."""
+    return '|'.join((r'(?<!\d)' if key[0].isdigit() else r'(?<!\w)' if key[0].isalnum() or key[0] == '_' else '') + re.escape(key) +
+                    (r'(?!\d)' if key[-1].isdigit() else r'(?!\w)' if key[-1].isalnum() or key[-1] == '_' else '') for key in keys if key)
+
+
 def replace_data(data, replacements):
     """Replace original matches once, preserving JSON structure and escaped text."""
     keys = sorted((key for key in replacements if key), key=len, reverse=True)
-    pattern = re.compile('|'.join(map(re.escape, keys))) if keys else None
+    pattern = re.compile(replacement_pattern(keys)) if keys else None
 
     def visit(value):
         if isinstance(value, str):

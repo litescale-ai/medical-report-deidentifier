@@ -1,6 +1,7 @@
 """Local text extraction shared by transcription and document editing."""
 
 import re
+from utils.identifier_rules import replacement_pattern
 from html import escape, unescape
 from html.parser import HTMLParser
 from pathlib import Path
@@ -28,7 +29,7 @@ def replace_strings(strings, replacements):
     text = "".join(strings)
     positions = [(ri, ci) for ri, value in enumerate(strings) for ci in range(len(value))]
     # Right to left keeps original offsets valid, even with adjacent matches.
-    for match in reversed(list(re.finditer("|".join(map(re.escape, keys)), text))):
+    for match in reversed(list(re.finditer(replacement_pattern(keys), text))):
         first, start = positions[match.start()]
         last, end = positions[match.end() - 1]
         suffix = result[last][end + 1:]

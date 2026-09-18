@@ -25,6 +25,26 @@ class IdentifierRemovalTest(unittest.TestCase):
         self.assertNotIn('8001', text)
         self.assertIn('Dose 5 mg. BP 120/80. Date 2024-01-02.', text)
 
+    def test_short_names_and_generic_aliases_preserve_clinical_words(self):
+        import pymupdf
+        from utils.document_formats import replace_strings
+        self.assertEqual(replace_strings(['Ann has ', 'Annual review.'], {'Ann': 'PERSON'}),
+                         ['PERSON has ', 'Annual review.'])
+        entity = dict(canonical_name='Lee Exampleton', entity_type='RELATIVE',
+                      variations=['Lee', 'patient', 'the patient'], relationship_context='')
+        text = 'Lee Exampleton attended. The patient reports improved sleep. Dose 5 mg.'
+        _, _, replacements = perform_deidentification({}, [entity], source_data=text)
+        self.assertNotIn('patient', replacements)
+        with tempfile.TemporaryDirectory() as directory:
+            source, target = Path(directory) / 'source.pdf', Path(directory) / 'target.pdf'
+            with pymupdf.open() as pdf:
+                pdf.new_page().insert_text((40, 60), text)
+                pdf.save(source)
+            deidentify_document(str(source), str(target), replacements)
+            result = ' '.join(extract_document(target)[0][1].split())
+            self.assertNotIn('Lee', result)
+            self.assertIn('The patient reports improved sleep. Dose 5 mg.', result)
+
     def test_numbers_removed_without_model_discovery(self):
         result, catalogue, replacements = perform_deidentification({'patient_summary': TEXT}, [])
         self.assert_removed(result['patient_summary'])

@@ -284,7 +284,7 @@ async def process_batch(files, *, root, output, secure, model='gemma4:e4b',
                 if not target.resolve().is_relative_to(output):
                     raise ValueError('An output symlink points outside the output folder.')
                 cached = state['files'][relative]
-                signature = digest([fingerprint, replacements])
+                signature = digest([fingerprint, replacements, 2])  # Export version: whole identifiers and fitted PDF labels.
                 if target.exists():
                     actual = file_digest(target)
                     if actual != cached.get('output_digest'):

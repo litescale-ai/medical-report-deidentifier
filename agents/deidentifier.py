@@ -52,12 +52,14 @@ def perform_deidentification(chronology_data: dict, discovered_entities: list[di
     identity_catalogue = {}
     replacement_map = {} # real_variation -> hash
     
+    generic_roles = {'patient', 'the patient', 'doctor', 'the doctor', 'dr', 'dr.', 'mr', 'mr.',
+                     'mrs', 'mrs.', 'ms', 'ms.', 'clinician', 'relative', 'mother', 'father'}
     # 1. Generate stable hashes and register mappings
     for entity in discovered_entities:
         canon_name = entity["canonical_name"]
         entity_type = entity["entity_type"]
         rel_context = entity["relationship_context"]
-        variations = entity["variations"]
+        variations = [value for value in entity["variations"] if value.strip().casefold() not in generic_roles]
         
         # Generate the hash pseudonym
         pseudonym_hash = generate_pseudonym_hash(canon_name, entity_type)

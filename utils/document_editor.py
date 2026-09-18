@@ -9,6 +9,8 @@ Also provides a synthesis summary writer for the companion output file.
 
 import os
 import json
+import re
+from utils.identifier_rules import replacement_pattern
 from utils.document_formats import (DOCUMENT_EXTENSIONS, TEXT_EXTENSIONS, HtmlText,
     read_text, replace_strings, all_docx_paragraphs, presentation_paragraphs)
 from typing import Optional
@@ -152,6 +154,7 @@ def _redact_pdf(input_path: str, output_path: str, replacement_map: dict[str, st
     for page in doc:
         replacements = []
         blocks = None
+        words = page.get_text("words")
         for target in sorted_keys:
             if not target.strip():
                 continue
@@ -159,6 +162,13 @@ def _redact_pdf(input_path: str, output_path: str, replacement_map: dict[str, st
             if rects and blocks is None:
                 blocks = page.get_text("dict")["blocks"]
             for rect in rects:
+                # search_for is case-insensitive and also finds Lee inside sleep.
+                # Check the matched fragment against whole surrounding PDF words.
+                fragment = target if len(target.split()) == 1 else ' '.join(page.get_textbox(rect).split())
+                surrounding = ' '.join(word[4] for word in words
+                                       if pymupdf.Rect(word[:4]).intersects(rect))
+                if not fragment or not re.search(replacement_pattern([fragment]), surrounding, re.IGNORECASE):
+                    continue
                 if any(rect.intersects(existing) for existing, _, _ in replacements):
                     continue
                 style = _extract_span_style(blocks, rect)
@@ -180,6 +190,9 @@ def _redact_pdf(input_path: str, output_path: str, replacement_map: dict[str, st
             fontsize = style["size"]
             color = style["color"]
 
+            width = pymupdf.get_text_length(replacement, fontname=base_font, fontsize=fontsize)
+            if width > rect.width:
+                fontsize *= rect.width / width
             insert_point = pymupdf.Point(rect.x0, rect.y1 - 1)
             page.insert_text(
                 insert_point,

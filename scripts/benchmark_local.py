@@ -7,6 +7,7 @@ import asyncio
 import json
 from pathlib import Path
 import platform
+import re
 import subprocess
 import sys
 from time import perf_counter
@@ -60,6 +61,7 @@ async def main(args):
     expected = fixtures(root, args.documents, args.pages)
     report = {'documents': args.documents, 'pages_per_document': args.pages,
               'fixture': 'Synthetic short clinical pages; not a clinical accuracy validation',
+              'code_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
               'platform': platform.platform(), 'machine': platform.machine(), 'models': []}
     extracted = '\n'.join(text for path in root.rglob('*.pdf') for _, text in extract_document(path))
     report.update(cache_version=CACHE_VERSION, extracted_characters=len(extracted), words=len(extracted.split()))
@@ -79,9 +81,14 @@ async def main(args):
                                      model=model, base_url=args.base_url, progress=lambda value: print(model, value, flush=True))
         elapsed = perf_counter() - started
         misses, damaged_clinical, checked_identifiers = {}, [], 0
+        clinical_pages_checked = clinical_pages_preserved = 0
         for path in result['completed']:
             relative = str(Path(path).relative_to(output))
-            text = '\n'.join(text for _, text in extract_document(path))
+            sections = extract_document(path)
+            text = '\n'.join(text for _, text in sections)
+            for _, page_text in sections:
+                clinical_pages_checked += 1
+                clinical_pages_preserved += re.sub(r'\s+', ' ', CLINICAL).strip() in re.sub(r'\s+', ' ', page_text)
             identifiers = expected[relative] + ['0723444', '1270753', '+27 21 555 0123']
             checked_identifiers += len(identifiers)
             remaining = [identifier for identifier in identifiers if identifier.casefold() in text.casefold()]
@@ -92,6 +99,7 @@ async def main(args):
         row = {'model': model, 'revision': result['model_revision'], 'warmup_seconds': round(warmup, 2),
                'seconds': round(elapsed, 2), 'stats': result['stats'], 'completed': len(result['completed']),
                'failed': result['failed'], 'reused': result['reused'], 'misses': misses,
+               'clinical_pages_checked': clinical_pages_checked, 'clinical_pages_preserved': clinical_pages_preserved,
                'checked_identifiers': checked_identifiers, 'damaged_clinical': damaged_clinical}
         report['models'].append(row)
         (args.output / 'results.json').write_text(json.dumps(report, indent=2))
