@@ -1,0 +1,182 @@
+{
+  "documents": 20,
+  "pages_per_document": 3,
+  "fixture": "Synthetic short clinical pages; not a clinical accuracy validation",
+  "code_commit": "0b729dbdbac4572a13c1820bc75ca1d4b8bbe43c",
+  "platform": "macOS-15.1-arm64-arm-64bit",
+  "machine": "arm64",
+  "models": [
+    {
+      "model": "gemma4:e4b",
+      "revision": "c6eb396dbd5992bbe3f5cdb947e8bbc0ee413d7c17e2beaae69f5d569cf982eb",
+      "warmup_seconds": 2.24,
+      "seconds": 180.22,
+      "completed": 20,
+      "failed": {},
+      "reused": 0,
+      "misses": {},
+      "clinical_pages_checked": 60,
+      "clinical_pages_preserved": 60,
+      "checked_identifiers": 240,
+      "damaged_clinical": [],
+      "request_latency_seconds": {
+        "median": 6.764479854493402,
+        "maximum": 17.088366042007692
+      },
+      "tokens": {
+        "requests": 20,
+        "input": 16461,
+        "output": 8355,
+        "generation_seconds": 150.234037,
+        "prompt_seconds": 19.776690999999996,
+        "load_seconds": 5.040741747999999,
+        "tokens_per_second": 55.613229643825655,
+        "last_tokens_per_second": 56.98464605696641
+      },
+      "totals": {
+        "documents": 20,
+        "extracted": 20,
+        "identified": 20,
+        "completed": 20,
+        "failed": 0,
+        "reused": 0,
+        "pages": 60,
+        "words": 7560,
+        "chunks": 20,
+        "chunks_completed": 20,
+        "cached_chunks": 0,
+        "identities": 51,
+        "identity_types": {
+          "PATIENT": 20,
+          "DOCTOR": 2,
+          "RELATIVE": 1,
+          "FACILITY": 1,
+          "IDENTIFIER": 1,
+          "LOCATION": 2,
+          "ADDRESS": 1,
+          "REGISTRATION": 2,
+          "PHONE": 1,
+          "EMAIL": 20
+        }
+      },
+      "installed_bytes": 9608350718
+    },
+    {
+      "model": "gemma4:e2b",
+      "revision": "7fbdbf8f5e45a75bb122155ed546e765b4d9c53a1285f62fd9f506baa1c5a47e",
+      "warmup_seconds": 3.33,
+      "seconds": 82.65,
+      "completed": 20,
+      "failed": {},
+      "reused": 0,
+      "misses": {},
+      "clinical_pages_checked": 60,
+      "clinical_pages_preserved": 60,
+      "checked_identifiers": 240,
+      "damaged_clinical": [],
+      "request_latency_seconds": {
+        "median": 4.051456021494232,
+        "maximum": 4.187690541963093
+      },
+      "tokens": {
+        "requests": 20,
+        "input": 16461,
+        "output": 5753,
+        "generation_seconds": 60.96939000000001,
+        "prompt_seconds": 12.239405,
+        "load_seconds": 4.7222346239999995,
+        "tokens_per_second": 94.358824977583,
+        "last_tokens_per_second": 91.6583538561071
+      },
+      "totals": {
+        "documents": 20,
+        "extracted": 20,
+        "identified": 20,
+        "completed": 20,
+        "failed": 0,
+        "reused": 0,
+        "pages": 60,
+        "words": 7560,
+        "chunks": 20,
+        "chunks_completed": 20,
+        "cached_chunks": 0,
+        "identities": 52,
+        "identity_types": {
+          "PATIENT": 20,
+          "DOCTOR": 3,
+          "RELATIVE": 1,
+          "FACILITY": 1,
+          "IDENTIFIER": 2,
+          "LOCATION": 1,
+          "ADDRESS": 1,
+          "REGISTRATION": 2,
+          "PHONE": 1,
+          "EMAIL": 20
+        }
+      },
+      "installed_bytes": 7162405886
+    },
+    {
+      "model": "qwen3.5:2b",
+      "revision": "324d162be6ca5629ae4517c8710434d0bd2d665bc94dbad46e9af8fbf8a2f0df",
+      "warmup_seconds": 5.49,
+      "seconds": 70.17,
+      "completed": 20,
+      "failed": {},
+      "reused": 0,
+      "misses": {},
+      "clinical_pages_checked": 60,
+      "clinical_pages_preserved": 60,
+      "checked_identifiers": 240,
+      "damaged_clinical": [],
+      "request_latency_seconds": {
+        "median": 3.163726916536689,
+        "maximum": 4.528071750071831
+      },
+      "tokens": {
+        "requests": 20,
+        "input": 17059,
+        "output": 4087,
+        "generation_seconds": 51.85559799999998,
+        "prompt_seconds": 9.083632,
+        "load_seconds": 3.4258398330000004,
+        "tokens_per_second": 78.81502012569601,
+        "last_tokens_per_second": 77.29247940291366
+      },
+      "totals": {
+        "documents": 20,
+        "extracted": 20,
+        "identified": 20,
+        "completed": 20,
+        "failed": 0,
+        "reused": 0,
+        "pages": 60,
+        "words": 7560,
+        "chunks": 20,
+        "chunks_completed": 20,
+        "cached_chunks": 0,
+        "identities": 51,
+        "identity_types": {
+          "PATIENT": 19,
+          "DOCTOR": 2,
+          "RELATIVE": 1,
+          "IDENTIFIER": 4,
+          "ADDRESS": 1,
+          "REGISTRATION": 2,
+          "PHONE": 1,
+          "EMAIL": 20,
+          "LOCATION": 1
+        }
+      },
+      "installed_bytes": 2741192820
+    }
+  ],
+  "cache_version": 4,
+  "extracted_characters": 52073,
+  "words": 7560,
+  "hardware": "Apple M4 Pro",
+  "memory_bytes": 51539607552,
+  "offline_tests": 48,
+  "verification_commit": "eb03c8e306152e67a5b9c3a05e7e2a6535e899c1",
+  "method": "Fresh uncached sequential runs after separate warmup, using 20 synthetic searchable PDFs of 3 short pages each. All use the same local Ollama endpoint, structured JSON and thinking disabled. One run per model on an active Mac; not a repeated, isolated hardware benchmark."
+}
