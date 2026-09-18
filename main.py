@@ -116,7 +116,7 @@ async def run_pipeline():
         
         # Perform deterministic pseudonymisation
         deidentified_chrono, identity_catalogue, replacement_map = perform_deidentification(
-            unified_chronology, discovered_entities
+            unified_chronology, discovered_entities, source_data=transcripts
         )
         
         # Save secure identity catalogue

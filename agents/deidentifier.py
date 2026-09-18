@@ -2,6 +2,7 @@ import json
 from pydantic import BaseModel, Field
 from utils.agent_config import generate_structured
 from utils.hashing import generate_pseudonym_hash
+from utils.identifier_rules import identifier_replacements, replace_data
 
 class IdentifiedEntity(BaseModel):
     canonical_name: str = Field(description="The primary full name of the entity, e.g. 'John Doe' or 'Dr. Jane Smith'")
@@ -38,15 +39,16 @@ async def discover_pii_entities(chronology_data: dict, api_key: str = None, back
     )
     return data["entities"]
 
-def perform_deidentification(chronology_data: dict, discovered_entities: list[dict]) -> tuple[dict, dict, dict]:
-    """Deterministically pseudonymises the chronological report.
+def perform_deidentification(chronology_data: dict, discovered_entities: list[dict], source_data=None) -> tuple[dict, dict, dict]:
+    """Pseudonymise a report and remove numbers found in it and source_data.
     
     Returns:
         tuple containing:
         - The deidentified/pseudonymised report data dict
         - The secure identity catalogue mapping hash -> real details
-        - The replacement map (real PII string -> pseudonym hash), sorted by key length descending
+        - The replacement map (real PII string -> pseudonym or removal marker)
     """
+    number_removals = identifier_replacements([source_data, chronology_data, discovered_entities])
     identity_catalogue = {}
     replacement_map = {} # real_variation -> hash
     
@@ -77,20 +79,10 @@ def perform_deidentification(chronology_data: dict, discovered_entities: list[di
         # Ensure canonical name is also mapped
         replacement_map[canon_name.strip()] = pseudonym_hash
 
-    # 2. Sort replacement variations by length descending to prevent partial matches 
-    # (e.g., replacing 'Dr. John Smith' before 'John Smith' or 'John')
-    sorted_replacements = sorted(replacement_map.keys(), key=len, reverse=True)
-    
-    # Convert chronology_data to a JSON string, perform replacements, and load it back
-    chrono_str = json.dumps(chronology_data, ensure_ascii=False)
-    
-    for real_str in sorted_replacements:
-        if not real_str:
-            continue
-        # We replace the exact string case-sensitively or case-insensitively if needed,
-        # but since variations were extracted exactly, case-sensitive replace is safer.
-        pseudonym = replacement_map[real_str]
-        chrono_str = chrono_str.replace(real_str, pseudonym)
-        
-    deidentified_data = json.loads(chrono_str)
+    # Number rules override model aliases and do not enter the reversible catalogue.
+    replacement_map.update(number_removals)
+    deidentified_data = replace_data(chronology_data, replacement_map)
+    # A model can include a telephone number in an entity name or relationship.
+    # Keep it out of both restored documents and the shareable relationship legend.
+    identity_catalogue = replace_data(identity_catalogue, number_removals)
     return deidentified_data, identity_catalogue, replacement_map

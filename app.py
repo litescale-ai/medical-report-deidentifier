@@ -380,7 +380,7 @@ with tab_deidentify:
                     # Stage 3.2: Deterministic replacement (Runs same python code for both modes!)
                     add_log("[Stage 3.2] Generating pseudonym hashes and applying deterministic replacement...")
                     deidentified_chrono, identity_catalogue, replacement_map = perform_deidentification(
-                        unified_chronology, discovered_entities
+                        unified_chronology, discovered_entities, source_data=transcripts if _backend != "mock" else None
                     )
                     
                     # Save local secure keys

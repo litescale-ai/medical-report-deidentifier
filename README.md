@@ -122,6 +122,15 @@ more time. Invalid or truncated responses stop processing rather than becoming
 an empty report. Image, audio and video transcription retain the selected
 backend's SDK media path; SDK cleanup can extend the configured deadline.
 
+Phone numbers and labelled HPCSA, practice and PCNS registration numbers are
+removed by local rules, independently of model discovery. The rules inspect the
+original extraction as well as the chronology. They recognise South African
+phone formats, international numbers beginning with `+`, and labelled phone/fax
+numbers. Removed numbers have no reversible mapping and remain removed when
+names are restored. This requires readable text or accurate OCR; unrecognised
+formats and numbers in images still need review. Dates, doses and clinical
+measurements are not removed merely because they contain digits.
+
 Both the UI and CLI generate documents in their original supported format. The
 returned-document tab also restores identifiers in these formats.
 
