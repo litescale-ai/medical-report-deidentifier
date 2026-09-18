@@ -14,6 +14,7 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -131,7 +132,7 @@ export -f uname command brew tesseract gs git python3.12 curl ollama nohup sleep
         self.env = {**os.environ, "TEST_ROOT": str(self.root), "BASH_ENV": str(self.shims),
                     "HOME": str(self.root / "home"), "TMPDIR": str(self.root),
                     "GUARDIAN_INSTALL_DIR": str(self.checkout), "REAL_BOOTSTRAP": str(ROOT / "bootstrap.sh"),
-                    "REAL_PYTHON": str(ROOT / ".venv/bin/python"), "OLLAMA_MODEL": "gemma4:e4b"}
+                    "REAL_PYTHON": sys.executable, "OLLAMA_MODEL": "gemma4:e4b"}
 
     def tearDown(self):
         pid_file = self.root / "server.pid"
