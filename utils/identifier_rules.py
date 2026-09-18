@@ -78,7 +78,13 @@ def replace_data(data, replacements):
         if isinstance(value, str):
             return pattern.sub(lambda match: replacements[match.group()], value) if pattern else value
         if isinstance(value, dict):
-            return {visit(key): visit(item) for key, item in value.items()}
+            result = {}
+            for key, item in value.items():
+                replaced_key = visit(key)
+                if replaced_key in result:
+                    raise ValueError('Replacing identifiers would create duplicate JSON keys. Output withheld.')
+                result[replaced_key] = visit(item)
+            return result
         if isinstance(value, list):
             return [visit(item) for item in value]
         if isinstance(value, tuple):

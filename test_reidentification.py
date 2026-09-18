@@ -149,6 +149,17 @@ class RestorationTest(unittest.TestCase):
         self.assertEqual(result['stats']['totals']['restored_occurrences'], 0)
         self.assertFalse(list(self.output.glob('.guardian-restore-*')))
 
+    def test_json_key_collision_is_withheld_without_losing_values(self):
+        self.catalogue({TOKEN: {'canonical_name': 'Alex Example'},
+                        'DOCTOR_1234ABCD': {'canonical_name': 'Alex Example'}})
+        source = self.root / 'record.json'
+        original = json.dumps({TOKEN: 'first clinical record', 'DOCTOR_1234ABCD': 'second clinical record'})
+        source.write_text(original)
+        result = self.run_batch()
+        self.assertIn('duplicate JSON keys', result['failed']['record.json'])
+        self.assertFalse((self.output / 'record.json').exists())
+        self.assertEqual(source.read_text(), original)
+
     def test_missing_invalid_catalogue_and_unsafe_output(self):
         source = self.root / 'record.txt'
         source.write_text(TOKEN)
