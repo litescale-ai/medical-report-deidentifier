@@ -75,7 +75,7 @@ checkout with local code changes or a different branch.
 
 Setup installs Homebrew if needed, then Python 3.12, Git, Tesseract, Ghostscript
 and Ollama as needed. It installs the app packages, configures local Ollama, and
-launches Guardian. The launcher downloads `gemma4:e4b` only if it is absent; an
+launches Guardian. The launcher downloads `qwen3.5:2b` only if it is absent; an
 existing configured model is retained. Progress and errors remain visible in
 Terminal. PDF dependencies use prebuilt `pikepdf` wheels, so pip can select a
 compatible OCRmyPDF version on older Intel Macs without compiling QPDF.
@@ -108,12 +108,14 @@ registration or labelled-address values. This check does not prove that the mode
 found every identifier; review the documents before sharing. File and folder names
 are preserved and may themselves contain identifying information.
 
-The model selector also offers `gemma4:e2b` and `qwen3.5:2b`. Download the desired
+The default is `qwen3.5:2b`, the fastest model in our [synthetic benchmark](docs/benchmarks/2026-09-18.md) that passed all checked identifier-removal and clinical-text-preservation tests. Existing installations retain their configured model; select Qwen in the sidebar to try it, or set `OLLAMA_MODEL="qwen3.5:2b"` in `.env` to use it on future launches.
+
+The model selector also offers `gemma4:e2b` and `gemma4:e4b`. Download an alternative
 model once in Terminal before selecting it:
 
 ```bash
 ollama pull gemma4:e2b
-ollama pull qwen3.5:2b
+ollama pull gemma4:e4b
 ```
 
 For a reproducible synthetic 20-document, 60-page comparison, use a fresh folder:
@@ -137,7 +139,7 @@ For a manually managed CLI environment, use:
 
 ```env
 AGENT_BACKEND="ollama"
-OLLAMA_MODEL="gemma4:e4b"
+OLLAMA_MODEL="qwen3.5:2b"
 OLLAMA_BASE_URL="http://127.0.0.1:11434/v1"
 ```
 
@@ -219,7 +221,7 @@ from that folder, the shortcut reopens it without starting a second server.
 #### 1. De-identify a folder
 
 ```bash
-python main.py --input "/path/to/source folder" --output "/path/to/results" --model gemma4:e4b
+python main.py --input "/path/to/source folder" --output "/path/to/results" --model qwen3.5:2b
 ```
 
 Subfolders are included by default. Use `--no-recursive` for only the selected

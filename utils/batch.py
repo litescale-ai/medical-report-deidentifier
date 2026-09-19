@@ -10,7 +10,7 @@ import tempfile
 from pydantic import BaseModel, Field
 
 from agents.deidentifier import perform_deidentification
-from utils.agent_config import generate_structured
+from utils.agent_config import DEFAULT_OLLAMA_MODEL, generate_structured
 from utils.batch_stats import BatchStats
 from utils.document_editor import deidentify_document, _ocr_pdf
 from utils.document_formats import DOCUMENT_EXTENSIONS, extract_document
@@ -172,7 +172,7 @@ def prepare_source(source, cache_dir, fingerprint):
     return prepared
 
 
-async def process_batch(files, *, root, output, secure, model='gemma4:e4b',
+async def process_batch(files, *, root, output, secure, model=DEFAULT_OLLAMA_MODEL,
                         base_url='http://localhost:11434', progress=lambda message: None,
                         model_revision=None, on_update=None, retry_of=None):
     """Discover sequentially, then redact using a shared map. Fail files explicitly.

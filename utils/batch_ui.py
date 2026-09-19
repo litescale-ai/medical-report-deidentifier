@@ -10,6 +10,7 @@ from time import perf_counter
 import streamlit as st
 
 from utils.batch import digest, process_batch, retry_failed, scan_folder
+from utils.agent_config import DEFAULT_OLLAMA_MODEL
 from utils.document_formats import DOCUMENT_EXTENSIONS
 
 
@@ -170,7 +171,7 @@ def render_batch(dirs):
                     output = str(Path(dirs['output']) / 'documents' / selection[:12])
                 job = start_job(
                     files, root=root, output=output, secure=dirs['secure'],
-                    model=st.session_state.get('_ollama_model', 'gemma4:e4b'),
+                    model=st.session_state.get('_ollama_model', DEFAULT_OLLAMA_MODEL),
                     base_url=st.session_state.get('_ollama_url', 'http://localhost:11434'),
                 )
                 st.session_state['batch_job'] = job
@@ -178,7 +179,7 @@ def render_batch(dirs):
                 st.error(f'Processing stopped: {error}. Completed sections are saved; run again to resume.')
     previous = st.session_state.get('batch_result')
     if previous and previous['failed']:
-        retry_model = st.session_state.get('_ollama_model', 'gemma4:e4b')
+        retry_model = st.session_state.get('_ollama_model', DEFAULT_OLLAMA_MODEL)
         st.caption(f"Retry failed files with {retry_model}. Change the model in the sidebar to try another installed model.")
         if st.button('Retry failed documents', disabled=active):
             if st.session_state.get('_backend') != 'ollama':

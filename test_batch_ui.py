@@ -9,6 +9,20 @@ from utils.batch import process_batch, retry_failed
 
 
 class BatchUiTest(unittest.TestCase):
+    def test_default_model_and_configured_choice(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dirs = {name: str(Path(directory) / name) for name in ('input', 'output', 'secure')}
+            for path in dirs.values():
+                Path(path).mkdir()
+            for env, expected in (({}, 'qwen3.5:2b'), ({'OLLAMA_MODEL': 'gemma4:e2b'}, 'gemma4:e2b')):
+                with self.subTest(expected=expected), patch.dict('os.environ', env, clear=True), patch(
+                    'dotenv.load_dotenv'
+                ), patch('utils.helpers.get_data_dirs', return_value=dirs):
+                    app = AppTest.from_file('app.py').run()
+                    self.assertFalse(app.exception)
+                    self.assertEqual(app.session_state['_ollama_model'], expected)
+                    self.assertEqual(next(item for item in app.selectbox if item.label == 'Ollama Model').value, expected)
+
     def test_folder_selection_processing_and_resume(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
@@ -24,7 +38,7 @@ class BatchUiTest(unittest.TestCase):
                 return await retry_failed(previous, **kwargs, model_revision='ui-test')
             entity = dict(canonical_name='Alex Example', entity_type='PATIENT',
                           variations=['Alex Example'], relationship_context='')
-            with patch('utils.helpers.get_data_dirs', return_value=dirs), patch(
+            with patch.dict('os.environ', {'OLLAMA_MODEL': 'gemma4:e4b'}), patch('utils.helpers.get_data_dirs', return_value=dirs), patch(
                 'utils.batch_ui.process_batch', run
             ), patch('utils.batch_ui.retry_failed', retry), patch('utils.batch.discover_names', AsyncMock(return_value=[entity])) as model:
                 app = AppTest.from_file('app.py').run()

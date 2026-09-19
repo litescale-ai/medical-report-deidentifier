@@ -90,7 +90,7 @@ values = dotenv_values('.env')
 set_key('.env', 'AGENT_BACKEND', 'ollama')
 set_key('.env', 'OLLAMA_BASE_URL', 'http://127.0.0.1:11434/v1')
 if not values.get('OLLAMA_MODEL'):
-    set_key('.env', 'OLLAMA_MODEL', 'gemma4:e4b')
+    set_key('.env', 'OLLAMA_MODEL', 'qwen3.5:2b')
 PY
 chmod 600 .env
 

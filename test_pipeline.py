@@ -15,6 +15,24 @@ from agents.transcriber import transcribe_media, ExtractedTranscript
 
 
 class LocalPipelineTest(unittest.IsolatedAsyncioTestCase):
+    async def test_default_model_and_explicit_overrides_reach_ollama(self):
+        import os
+        for environment, selected, expected in (
+            ({}, None, 'qwen3.5:2b'),
+            ({'OLLAMA_MODEL': 'gemma4:e2b'}, None, 'gemma4:e2b'),
+            ({'OLLAMA_MODEL': 'gemma4:e2b'}, 'gemma4:e4b', 'gemma4:e4b'),
+        ):
+            with self.subTest(expected=expected):
+                def respond(request):
+                    self.assertEqual(json.loads(request.content)['model'], expected)
+                    return httpx.Response(200, json={'done': True, 'done_reason': 'stop',
+                        'message': {'content': '{"entities": []}'}})
+                client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+                with patch.dict(os.environ, environment, clear=True), patch(
+                    'utils.agent_config.httpx.AsyncClient', return_value=client
+                ):
+                    await discover_pii_entities({}, backend='ollama', ollama_model=selected)
+
     async def test_native_ollama_metrics_use_nanoseconds_and_missing_is_unknown(self):
         from utils.batch import discover_names
         for telemetry, expected in [({'prompt_eval_count': 64, 'eval_count': 48, 'eval_duration': 2_000_000_000}, 24), ({}, None)]:

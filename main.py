@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 # Add project root to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from utils.agent_config import DEFAULT_OLLAMA_MODEL
 from utils.document_formats import DOCUMENT_EXTENSIONS
 from utils.helpers import get_data_dirs, save_json, load_json
 from utils.document_editor import deidentify_document, write_synthesis_summary
@@ -203,7 +204,7 @@ if __name__ == "__main__":
                 print(f"Skipped: {name}")
             result = asyncio.run(process_batch(
                 files, root=root, output=output, secure=dirs['secure'],
-                model=args.model or os.getenv('OLLAMA_MODEL', 'gemma4:e4b'),
+                model=args.model or os.getenv('OLLAMA_MODEL', DEFAULT_OLLAMA_MODEL),
                 base_url=os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434'), progress=print,
             ))
             print(f"Completed: {len(result['completed'])}; failed: {len(result['failed'])}; reused: {result['reused']}")

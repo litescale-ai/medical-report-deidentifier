@@ -57,7 +57,7 @@ fi
 model=$(.venv/bin/python - <<'PY'
 import os
 from dotenv import dotenv_values
-print(os.getenv('OLLAMA_MODEL') or dotenv_values('.env').get('OLLAMA_MODEL') or 'gemma4:e4b')
+print(os.getenv('OLLAMA_MODEL') or dotenv_values('.env').get('OLLAMA_MODEL') or 'qwen3.5:2b')
 PY
 )
 export OLLAMA_MODEL="$model"

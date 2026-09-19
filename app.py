@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from utils.agent_config import DEFAULT_OLLAMA_MODEL
 from utils.document_formats import DOCUMENT_EXTENSIONS
 from utils.helpers import get_data_dirs, save_json, load_json
 from utils.document_editor import (
@@ -228,7 +229,7 @@ if run_mode.startswith("🌟"):
 
 # --- Ollama local settings ---
 elif run_mode.startswith("🏠"):
-    configured_model = os.getenv("OLLAMA_MODEL", "gemma4:e4b")
+    configured_model = os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
     ollama_models = list(dict.fromkeys([configured_model, "gemma4:e4b", "gemma4:e2b", "qwen3.5:2b", "gemma4:12b", "gemma4:26b"]))
     ollama_model = st.sidebar.selectbox(
         "Ollama Model",

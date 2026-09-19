@@ -160,7 +160,7 @@ export -f uname command brew tesseract gs git python3.12 curl ollama nohup sleep
         return (self.root / "calls").read_text() if (self.root / "calls").exists() else ""
 
     def test_fresh_install_from_public_wrapper_launches_and_creates_working_shortcut(self):
-        result = self.run_script("install.sh", SCENARIO="fresh")
+        result = self.run_script("install.sh", SCENARIO="fresh", OLLAMA_MODEL="")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("brew install", self.calls())
         self.assertIn("package-download-progress", result.stdout)
@@ -171,6 +171,8 @@ export -f uname command brew tesseract gs git python3.12 curl ollama nohup sleep
         self.assertTrue(os.access(shortcut, os.X_OK))
         self.assertIn("icon -l JavaScript", self.calls())
         self.assertIn("AGENT_BACKEND='ollama'", (self.checkout / ".env").read_text())
+        self.assertIn("OLLAMA_MODEL='qwen3.5:2b'", (self.checkout / ".env").read_text())
+        self.assertIn("ollama pull qwen3.5:2b", self.calls())
         (self.root / "calls").write_text("")
         launch = subprocess.run(["/bin/bash", str(shortcut)], env=self.env,
                                 capture_output=True, text=True, timeout=10)
@@ -297,6 +299,14 @@ export -f uname command brew tesseract gs git python3.12 curl ollama nohup sleep
         self.assertIn('GEMINI_API_KEY="keep-me"', (self.checkout / ".env").read_text())
         self.assertIn("ollama show gemma4:e2b", self.calls())
         self.assertNotIn("ollama pull", self.calls())
+
+    def test_launcher_defaults_to_qwen_without_model_settings(self):
+        self.prepare_existing()
+        (self.checkout / ".env").write_text("")
+        (self.root / "ready").touch()
+        result = self.run_script("run_app.sh", OLLAMA_MODEL="")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("ollama pull qwen3.5:2b", self.calls())
 
     def test_package_failure_is_visible_and_does_not_launch(self):
         result = self.run_script("bootstrap.sh", PIP_STATUS="23")

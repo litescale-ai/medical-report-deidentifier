@@ -19,7 +19,7 @@ from google.antigravity.types import BuiltinTools, CapabilitiesConfig, ModelOutp
 
 # Defaults for the Ollama backend
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434/v1"
-DEFAULT_OLLAMA_MODEL = "gemma4:e4b"
+DEFAULT_OLLAMA_MODEL = "qwen3.5:2b"
 
 
 def model_timeout_seconds() -> float:
@@ -50,7 +50,7 @@ def build_agent_config(
         response_schema: Optional Pydantic model or dict for structured output.
         backend: "gemini" or "ollama". Falls back to env var AGENT_BACKEND, then "ollama".
         api_key: Gemini API key (only used when backend is "gemini").
-        ollama_model: Ollama model name, e.g. "gemma4:e4b".
+        ollama_model: Ollama model name, e.g. "qwen3.5:2b".
         ollama_base_url: Ollama OpenAI-compat endpoint URL.
     """
     backend = (backend or os.getenv("AGENT_BACKEND", "ollama")).lower().strip()
