@@ -124,6 +124,83 @@ For a reproducible synthetic 20-document, 60-page comparison, use a fresh folder
 python scripts/benchmark_local.py --output /tmp/guardian-model-comparison
 ```
 
+### Prepare for AI with local NER
+
+Guardian opens with **Prepare for AI (local NER)**, **Folder** input and **Both**
+Markdown and PDF outputs selected. This integrates the NER
+experiment and its saved keep-term list into the application. Ollama and cloud
+credentials are not used by this workflow; the existing Ollama workflows remain
+available.
+
+1. On a new machine, click **Install local NER support** once. The first run
+   downloads the pinned model; document processing stays local.
+2. Choose **Markdown packet**, **Redacted PDFs**, or **Both**. PDF output requires
+   PDF inputs and preserves their page appearance. Markdown also accepts TXT,
+   MD, HTML, DOCX, XLSX and PPTX.
+3. Select files or a folder for **one patient**. Folder mode shares **Input folder**
+   and **Include subfolders** with the LLM workflow. Each selected format has its
+   own destination: **Markdown output folder** and **PDF output folder**.
+   Change either suggested location if needed. Confirm
+   that the selection belongs to that patient, then click **Prepare documents**.
+4. Compare original and prepared text by page or section. Download PDF drafts to
+   inspect their appearance. Every selected file appears in the status table under
+   its original filename, with a separate Markdown and PDF status. Withheld PDFs
+   show the filename, exact remaining text, type and page. Review all pages,
+   not only the first displayed page.
+5. Correct false positives in **Keep terms**, or add missed names and addresses
+   under **Additional identifying text to remove**, then prepare again. Saved
+   keep terms apply to later NER runs. You can also edit the Markdown directly.
+6. Confirm review and click **Save reviewed outputs**. Only share the reviewed
+   documents. Keep `PRIVATE.json` and the case folder private.
+
+Reviewed NER exports go into the folder selected for each format. Suggested
+locations are `Medical Reports-redacted/markdown` and `Medical Reports-redacted/pdf`.
+PDFs keep their original names
+and subfolders: `Consultations/Report.pdf` becomes
+`Consultations/Report-redacted.pdf`. The combined Markdown packet is named
+`Medical Reports-redacted.md`, or `Report-redacted.md` for a single document.
+Uploaded files also have editable per-format destinations, suggested under
+`data/output/<document name>-redacted/markdown` and `.../pdf`, or
+`data/output/Documents-redacted/` for multiple files. An existing output folder is
+used when the new filenames do not conflict. A conflict creates a numbered sibling
+such as `pdf-2`, preserving earlier files. Folder scanning excludes both selected
+output folders. Switching formats retains the destinations you entered.
+The screen and private manifest record both saved folders and offer downloads
+with the same filenames.
+Private manifests and identity mappings stay in the private case folder.
+
+If the edited Markdown still contains potential identifiers, the review screen
+lists the exact text, identity type, document/page, packet line and nearby text,
+along with why it was flagged. Correct it in the editor, or select **Keep the
+flagged text and save anyway**. An optional note, the accepted findings and the
+saved file digest are recorded privately as `user_override`. The packet is marked
+as retaining flagged text. Editing the packet resets the override; the choice
+does not change detection or the keep list for future runs.
+
+Each run gets its own folder under `data/secure/ner-cases/`. Its private manifest
+records sources, identity mapping, keep terms, manual removals, document/page/word
+counts, identity types, processing time, PDF failures and approval. NER is a span
+detector, so generation tokens per second does not apply. Previous results and
+originals are retained. A failed new run does not display an older result as its
+own output. PDF export failures retain successful drafts and the Markdown packet.
+
+The ten reviewed phrases from the experiment are the initial keep list. Edit and
+save them in the UI or run `python prepare_for_ai.py --add-keep-term "Digit span"`.
+The UI and CLI share `data/secure/ner-keep-terms.txt`. Keep terms cannot exempt
+recognised phone numbers, registrations or other required removals. They can still
+preserve an identifying use of an ordinary phrase, so review matters.
+
+UI exports use the existing private identity catalogue and can be restored in
+bulk through **Re-identify Returned Report**, for both Markdown and PDF. Names
+are reversible; values replaced with removal markers stay removed.
+The standalone experiment CLI retains its separate case-local placeholder format.
+OCR may miss names or clinical text, and text packets omit visual evidence.
+Preserving PDF appearance does not prove that every identifier was found.
+
+For a manually managed environment: `python -m pip install -r requirements-ner.txt`.
+The optional model stack has been exercised on Apple Silicon; Intel installation
+has not been verified. The normal installer still prepares the Ollama workflow.
+
 ### Existing checkouts and Linux
 
 From a clean checkout, run `bash bootstrap.sh` to install/update or
@@ -163,11 +240,11 @@ configured by the installer. Each native request has a total deadline of 120
 seconds; set a finite positive `MODEL_TIMEOUT_SECONDS` if larger documents need
 more time. In document-only mode, a timed-out section longer than 3,000 characters
 gets one recovery pass using smaller overlapping pieces, each with its own request
-deadline. If any smaller piece fails, the document is withheld. Identifier matching
+deadline. A remaining timeout flags that section for review. Identifier matching
 accepts case and whitespace differences but always replaces exact text found in the
-source; identifiers absent from the source still cause a failure.
-Invalid or truncated responses stop processing rather than becoming
-an empty report. Image, audio and video transcription retain the selected
+source; suggestions absent from the source are saved for review while processing continues.
+Invalid or truncated responses flag document sections for review; they still stop
+the chronology workflow rather than becoming an empty report. Image, audio and video transcription retain the selected
 backend's SDK media path; SDK cleanup can extend the configured deadline.
 
 Email addresses, labelled address fields, phone numbers and labelled HPCSA, practice and PCNS registration numbers are
@@ -267,8 +344,18 @@ During folder or file processing, Guardian shows a running timer, discovery and 
 
 Generation tokens per second uses Ollama's output-token count divided by its generation duration. It updates after each model response and excludes loading and prompt evaluation. Cached sections add no new tokens. Identifier counts describe discovered names and locally removed values, not a guarantee that every identity was detected.
 
-Each run saves a private `manifest.json` beside its resumable checkpoint under `data/secure/batches/`. The results screen displays its exact location. It records elapsed time, per-file status and counts, identity types, measured token statistics and prior-run summaries. Identity values remain in the private catalogue/checkpoint, not in these aggregate statistics. The manifest still contains document paths, so keep it private.
+Each run saves a private `manifest.json` beside its resumable checkpoint under `data/secure/batches/`. The results screen displays its exact location. It records elapsed time, per-file status and counts, identity types, measured token statistics and prior-run summaries. When review is needed, it also contains source sections, model suggestions and your decisions. These can identify people: keep manifests, checkpoints and review drafts private.
 
 [Three-model benchmark and limitations](docs/benchmarks/2026-09-18.md)
 
 If some documents fail, choose **Retry failed documents**. It retries only those files using the model currently selected in the sidebar. You can keep the same model to resume cached sections or choose another installed model for fresh discovery. Successful outputs are retained. Retry statistics describe that attempt; the results list also includes earlier successes. The private manifest links to an immutable record of the previous attempt.
+
+### Review uncertain sections
+
+Unmatched suggestions, malformed model replies and unresolved timeouts no longer discard an entire document. Guardian keeps matched identifiers, finishes the remaining sections and creates a private `REVIEW_REQUIRED-` draft. Drafts appear under **Needs review**, separately from completed downloads. They may still contain identities and are not final outputs.
+
+Select a flagged section to compare the original document text with text extracted from its saved review draft, side by side. The preview shows full overlapping pages (or document parts), labelled by location, with extra spacing removed for readability. Category labels mistakenly returned by the model are explained together; raw suggestions remain available in an expandable list. Choose **Ignore incorrect suggestions** after checking the displayed pages, or **Add manual redactions** and copy identifying text from the original view, one value per line. Matching occurrences throughout that document are removed. Manual redactions use `[IDENTITY REMOVED]` and cannot be reversed by re-identification. Confirm that you reviewed the pages, then apply the decision. Alternatively, **Retry this section** with the same or another installed local model; only that section calls the model again.
+
+Every flagged section must be resolved before the document enters completed downloads. Human decisions produce a **User-approved** result; successful model-only results say **Automatic checks passed**. The private manifest records decisions, notes, timestamps and retry models. Neither status guarantees that every identifier was found.
+
+Known remaining phone, registration, email or labelled-address values still block exports. Unreadable or locked documents and edited outputs also remain failures. After restarting Guardian, process the same selection with the same output folder and original model to reload cached work and pending reviews. The command line exits nonzero for drafts awaiting review; use the app to resolve them.

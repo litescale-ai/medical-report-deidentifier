@@ -1,0 +1,5 @@
+# Optional local NER support, installed from the Prepare for AI screen or with pip.
+-r requirements.txt
+gliner==0.2.29
+transformers==4.57.6
+torch==2.10.0

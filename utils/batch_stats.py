@@ -73,6 +73,8 @@ class BatchStats:
             'identified': sum(item['identified'] for item in values),
             'completed': sum(item['completed'] for item in values),
             'failed': sum(item['status'] == 'failed' for item in values),
+            'needs_review': sum(item['status'] == 'needs_review' for item in values),
+            'user_approved': sum(item.get('verification') == 'user_approved' and item['completed'] for item in values),
             'reused': sum(item['status'] == 'reused' for item in values),
             'pages': sum(item['pages'] or 0 for item in values),
             'words': sum(item['words'] for item in values),

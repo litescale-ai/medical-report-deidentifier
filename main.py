@@ -208,12 +208,14 @@ if __name__ == "__main__":
                 base_url=os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434'), progress=print,
             ))
             print(f"Completed: {len(result['completed'])}; failed: {len(result['failed'])}; reused: {result['reused']}")
+            if result['needs_review']:
+                print(f"Needs review: {len(result['needs_review'])}. Open Guardian and process the same selection to review cached sections.")
             stats = result['stats']
             print(f"Elapsed: {stats['elapsed_seconds']}s; PDF pages: {stats['totals']['pages']}; words: {stats['totals']['words']}; identifiers: {stats['totals']['identities']}")
             print(f"Identity types: {stats['totals']['identity_types']}; model tokens/s: {stats['tokens']['tokens_per_second']}")
             print(f"Private manifest: {result['manifest']}")
             print(f"Output: {result['output']}")
-            sys.exit(1 if result['failed'] else 0)
+            sys.exit(1 if result['failed'] or result['needs_review'] else 0)
         except Exception as error:
             print(f"Processing stopped: {error}", file=sys.stderr)
             sys.exit(1)

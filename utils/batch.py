@@ -11,7 +11,7 @@ import tempfile
 from pydantic import BaseModel, Field
 
 from agents.deidentifier import perform_deidentification
-from utils.agent_config import DEFAULT_OLLAMA_MODEL, generate_structured
+from utils.agent_config import DEFAULT_OLLAMA_MODEL, ModelOutputError, generate_structured
 from utils.batch_stats import BatchStats
 from utils.document_editor import deidentify_document, _ocr_pdf
 from utils.document_formats import DOCUMENT_EXTENSIONS, extract_document
@@ -31,6 +31,13 @@ class NameEntity(BaseModel):
 
 class NamesResult(BaseModel):
     entities: list[NameEntity]
+
+
+class DiscoveryReview(ValueError):
+    """Keep grounded identifiers when other model suggestions need human review."""
+    def __init__(self, entities, issues):
+        self.entities, self.issues = entities, issues
+        super().__init__(issues[0]['reason'])
 
 
 def source_variants(text, value):
@@ -67,29 +74,46 @@ async def discover_names(text, *, model, base_url, metrics_callback=None):
         smaller_limit = CHUNK_CHARS // 2
         if len(text) <= smaller_limit:
             raise
-        recovered = []
+        recovered, issues = [], []
         for part in chunks(text, limit=smaller_limit):
-            recovered.extend(await discover_names(part, model=model, base_url=base_url,
-                                                   metrics_callback=metrics_callback))
+            try:
+                recovered.extend(await discover_names(part, model=model, base_url=base_url,
+                                                       metrics_callback=metrics_callback))
+            except DiscoveryReview as error:
+                recovered.extend(error.entities)
+                issues.extend(error.issues)
+            except (TimeoutError, ModelOutputError) as error:
+                issues.append({'reason': str(error), 'candidates': []})
+        if issues:
+            raise DiscoveryReview(merge_entities(recovered), issues)
         return merge_entities(recovered)
-    entities = []
+    entities, issues = [], []
     allowed = {'PATIENT', 'DOCTOR', 'RELATIVE', 'LOCATION', 'FACILITY', 'ORGANIZATION', 'EMAIL', 'IDENTIFIER'}
     for entity in result['entities']:
         names = source_variants(text, entity['name'])
         aliases = [span for alias in entity['aliases'] for span in source_variants(text, alias)]
         spans = list(dict.fromkeys(names + aliases))
         if not spans:
-            if not entity['name'].strip():
-                raise ValueError('Model returned an empty identifier. Retry this file.')
-            raise ValueError('Model returned an identifier absent from the source. Retry this file.')
+            reason = ('Model returned an empty identifier.' if not entity['name'].strip()
+                      else 'Model returned an identifier absent from the source.')
+            issues.append({'reason': reason, 'candidates': [entity]})
+            continue
         kind = entity['kind'].upper().strip()
         entities.append(dict(canonical_name=spans[0], entity_type=kind if kind in allowed else 'IDENTIFIER',
                              variations=spans[1:], relationship_context=''))
+    if issues:
+        raise DiscoveryReview(entities, issues)
     return entities
 
 
 def chunks(text, limit=CHUNK_CHARS, overlap=CHUNK_OVERLAP):
     """Bound requests with overlap; cut at whitespace so identifiers are not split."""
+    for start, end in chunk_ranges(text, limit, overlap):
+        yield text[start:end]
+
+
+def chunk_ranges(text, limit=CHUNK_CHARS, overlap=CHUNK_OVERLAP):
+    """Keep source offsets available for locating a model section in its document."""
     start = 0
     while start < len(text):
         end = min(start + limit, len(text))
@@ -97,7 +121,7 @@ def chunks(text, limit=CHUNK_CHARS, overlap=CHUNK_OVERLAP):
             boundary = text.rfind(' ', start + limit // 2, end)
             if boundary > start:
                 end = boundary
-        yield text[start:end]
+        yield start, end
         if end == len(text):
             return
         start = max(start + 1, end - overlap)
@@ -197,7 +221,7 @@ def prepare_source(source, cache_dir, fingerprint):
 
 async def process_batch(files, *, root, output, secure, model=DEFAULT_OLLAMA_MODEL,
                         base_url='http://localhost:11434', progress=lambda message: None,
-                        model_revision=None, on_update=None, retry_of=None):
+                        model_revision=None, on_update=None, retry_of=None, review_retry=None):
     """Discover sequentially, then redact using a shared map. Fail files explicitly.
 
     Checkpoints are private and keyed by source bytes, endpoint, model revision,
@@ -234,10 +258,16 @@ async def process_batch(files, *, root, output, secure, model=DEFAULT_OLLAMA_MOD
     cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     checkpoint_path = cache_dir / 'progress.json'
     state = read_json(checkpoint_path, {'chunks': {}, 'files': {}})
+    state.setdefault('issues', {})
+    state.setdefault('decisions', {})
+    state.setdefault('review_chunks', {})
     manifest_path = cache_dir / 'manifest.json'
     metrics = BatchStats([str(source.relative_to(root)) for source in sources],
                          model=model, revision=model_revision, output=output, manifest=manifest_path,
                          save=save_private, previous=read_json(manifest_path, {}), emit=on_update)
+    if review_retry:
+        metrics.data['review_retry'] = review_retry
+    metrics.data['decision_history'] = state.get('decision_history', [])
     if retry_of:
         metrics.data["retry_of"] = str(retry_of)
         metrics.publish()
@@ -266,27 +296,54 @@ async def process_batch(files, *, root, output, secure, model=DEFAULT_OLLAMA_MOD
                 removals = identifier_replacements(text)
                 scrubbed = replace_data(text, removals)
                 parts = list(chunks(scrubbed))
-                entities = []
+                entities, reviews, decisions, manual = [], [], [], {}
                 metrics.update(relative, extracted=True, words=len(text.split()),
                                pages=len(sections) if source.suffix.lower() == '.pdf' else None,
                                chunks_total=len(parts))
                 metrics.record_identities(relative, entities, removals)
                 for part_number, part in enumerate(parts, 1):
                     chunk_key = digest(part)
+                    review_id = digest([relative, fingerprint, part_number, chunk_key])
+                    retry_model = (review_retry or {}).get(review_id)
                     metrics.update(relative, stage='Discovering identities', status='identifying', current_chunk=part_number)
-                    if chunk_key not in state['chunks']:
+                    override = state['review_chunks'].get(review_id)
+                    if retry_model or (not override and chunk_key not in state['chunks']):
                         progress(f'{index}/{len(sources)}: Identifying {relative}, section {part_number}/{len(parts)}')
-                        state['chunks'][chunk_key] = await discover_names(
-                            part, model=model, base_url=base_url,
-                            metrics_callback=lambda measured: metrics.record_tokens(relative, measured))
+                        chunk_model = retry_model or model
+                        issues = []
+                        try:
+                            found = await discover_names(
+                                part, model=chunk_model, base_url=base_url,
+                                metrics_callback=lambda measured: metrics.record_tokens(relative, {**measured, 'model': chunk_model}))
+                        except DiscoveryReview as error:
+                            found, issues = error.entities, error.issues
+                        except (TimeoutError, ModelOutputError) as error:
+                            found, issues = [], [{'reason': str(error), 'candidates': []}]
+                        if retry_model:
+                            override = {'entities': found, 'issues': issues, 'model': chunk_model}
+                            state['review_chunks'][review_id] = override
+                        else:
+                            state['chunks'][chunk_key], state['issues'][chunk_key] = found, issues
                         save_private(checkpoint_path, state)
                     else:
                         metrics.data['files'][relative]['cached_chunks'] += 1
                         progress(f'{index}/{len(sources)}: Reusing completed section {part_number}/{len(parts)} of {relative}')
-                    entities.extend(state['chunks'][chunk_key])
-                    metrics.record_identities(relative, merge_entities(entities), removals)
-                    metrics.update(relative, chunks_completed=part_number)
-                state['files'][relative] = {**cached, 'source': fingerprint, 'sections': sections}
+                    found = override['entities'] if override else state['chunks'][chunk_key]
+                    issues = override['issues'] if override else state['issues'].get(chunk_key, [])
+                    entities.extend(found)
+                    decision = state['decisions'].get(review_id)
+                    if decision:
+                        decisions.append(decision)
+                        for value in decision.get('values', []):
+                            for span in source_variants(text, value):
+                                manual[span] = '[IDENTITY REMOVED]'
+                    if issues and not (decision and decision['action'] in {'dismiss', 'redact'}):
+                        reviews.append({'id': review_id, 'section': part_number, 'text': part, 'issues': issues,
+                                        'model': override['model'] if override else model, 'source': fingerprint})
+                    metrics.record_identities(relative, merge_entities(entities), {**removals, **manual})
+                    metrics.update(relative, chunks_completed=part_number, review_sections=reviews, decisions=decisions)
+                state['files'][relative] = {**cached, 'source': fingerprint, 'sections': sections,
+                                            'review_sections': reviews, 'decisions': decisions, 'manual': manual}
                 save_private(checkpoint_path, state)
                 records.append((source, relative, prepared, sections, fingerprint))
                 all_entities.extend(entities)
@@ -300,25 +357,32 @@ async def process_batch(files, *, root, output, secure, model=DEFAULT_OLLAMA_MOD
         catalogue_path = secure / 'identity_catalogue.json'
         save_private(catalogue_path, {**read_json(catalogue_path, {}), **catalogue})
         rule_removals = identifier_replacements(source_data)
-        completed, reused = [], 0
+        completed, needs_review, reused = [], {}, 0
         for source, relative, prepared, sections, fingerprint in records:
             temporary = None
             try:
                 if file_digest(source) != fingerprint:
                     raise ValueError('The source changed during processing. Run it again.')
-                target = output / relative
-                if not target.resolve().is_relative_to(output):
-                    raise ValueError('An output symlink points outside the output folder.')
                 cached = state['files'][relative]
-                signature = digest([fingerprint, replacements, 2])  # Export version: whole identifiers and fitted PDF labels.
+                reviews = cached['review_sections']
+                user_approved = any(d['action'] in {'dismiss', 'redact'} for d in cached['decisions'])
+                verification = 'needs_review' if reviews else 'user_approved' if user_approved else 'automatic'
+                target_root = cache_dir / 'drafts' if reviews else output
+                target = (target_root / Path(relative).parent / ('REVIEW_REQUIRED-' + Path(relative).name)
+                          if reviews else target_root / relative)
+                if not target.resolve().is_relative_to(target_root):
+                    raise ValueError('An output symlink points outside the output folder.')
+                document_replacements = {**replacements, **cached['manual']}
+                signature = digest([fingerprint, document_replacements, 5])  # Re-export wrapped matches with touching font boxes.
+                digest_key, signature_key = ('draft_digest', 'draft_signature') if reviews else ('output_digest', 'signature')
                 if target.exists():
                     actual = file_digest(target)
-                    if actual != cached.get('output_digest'):
+                    if actual != cached.get(digest_key):
                         raise ValueError('An existing output was created or edited outside this run. Choose another output folder.')
-                    if cached.get('signature') == signature:
+                    if not reviews and cached.get(signature_key) == signature:
                         completed.append(str(target))
                         reused += 1
-                        metrics.update(relative, status='reused', completed=True, output=str(target))
+                        metrics.update(relative, status='reused', completed=True, output=str(target), verification=verification)
                         progress(f'Already verified: {relative}')
                         continue
                 metrics.update(relative, stage='Redacting and checking exports', status='exporting')
@@ -326,7 +390,7 @@ async def process_batch(files, *, root, output, secure, model=DEFAULT_OLLAMA_MOD
                 target.parent.mkdir(parents=True, exist_ok=True)
                 fd, temporary = tempfile.mkstemp(prefix='.guardian-', suffix=source.suffix, dir=target.parent)
                 os.close(fd)
-                if not deidentify_document(str(prepared), temporary, replacements):
+                if not deidentify_document(str(prepared), temporary, document_replacements):
                     raise ValueError('Unsupported output format.')
                 checked = extract_document(temporary)
                 remaining = identifier_replacements(checked)
@@ -334,11 +398,18 @@ async def process_batch(files, *, root, output, secure, model=DEFAULT_OLLAMA_MOD
                 if remaining or any(number in output_text for number in rule_removals):
                     raise ValueError('Identifier verification failed. This output was withheld for review.')
                 os.replace(temporary, target)
-                cached.update(signature=signature, output_digest=file_digest(target))
+                cached.update({signature_key: signature, digest_key: file_digest(target)})
                 save_private(checkpoint_path, state)
-                completed.append(str(target))
-                metrics.update(relative, status='completed', completed=True, output=str(target))
-                progress(f'Verified: {relative}')
+                if reviews:
+                    needs_review[relative] = {'draft': str(target), 'sections': reviews,
+                        'context': {'manifest': str(manifest_path), 'root': str(root), 'output': str(output),
+                                    'model': model, 'model_revision': model_revision, 'base_url': base_url}}
+                    metrics.update(relative, status='needs_review', completed=False, draft=str(target), verification=verification)
+                    progress(f'Needs review: {relative}')
+                else:
+                    completed.append(str(target))
+                    metrics.update(relative, status='completed', completed=True, output=str(target), verification=verification)
+                    progress(f'{verification}: {relative}')
             except Exception as error:
                 failures[relative] = str(error)
                 metrics.update(relative, status='failed', error=str(error))
@@ -346,8 +417,11 @@ async def process_batch(files, *, root, output, secure, model=DEFAULT_OLLAMA_MOD
             finally:
                 if temporary and os.path.exists(temporary):
                     os.unlink(temporary)
-        final_stats = metrics.finish('completed_with_errors' if failures else 'completed')
+        verifications = {path: metrics.data['files'][str(Path(path).relative_to(output))]['verification'] for path in completed}
+        metrics.data['output_verification'] = verifications
+        final_stats = metrics.finish('completed_with_errors' if failures else 'completed_needs_review' if needs_review else 'completed')
         return {'stats': final_stats, 'manifest': str(manifest_path), 'completed': completed, 'failed': failures, 'reused': reused,
+                'needs_review': needs_review, 'verifications': verifications, 'base_url': base_url,
                 'root': str(root), 'output': str(output), 'model': model, 'model_revision': model_revision}
     except BaseException as error:
         metrics.finish('interrupted' if isinstance(error, asyncio.CancelledError) else 'failed', str(error))
@@ -373,9 +447,13 @@ async def retry_failed(previous, *, secure, model, base_url='http://localhost:11
         model_revision=model_revision, retry_of=parent,
     )
     result['completed'] = list(dict.fromkeys(previous['completed'] + result['completed']))
+    result['needs_review'] = {**previous.get('needs_review', {}), **result['needs_review']}
+    result['verifications'] = {**previous.get('verifications', {}), **result['verifications']}
+    result['stats']['output_verification'] = result['verifications']
     result['stats']['retained_completed'] = previous['completed']
     result['stats']['batch_completed'] = len(result['completed'])
     result['stats']['batch_failed'] = len(result['failed'])
+    result['stats']['batch_needs_review'] = len(result['needs_review'])
     save_private(Path(result['manifest']), result['stats'])
     if on_update:
         on_update(result['stats'])

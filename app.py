@@ -24,6 +24,7 @@ from agents.cataloguer import catalogue_transcripts
 from agents.deidentifier import discover_pii_entities, perform_deidentification
 from utils.batch_ui import render_batch
 from utils.reidentification_ui import render_reidentification
+from utils.ner_ui import render_ner
 
 # Page Config
 st.set_page_config(
@@ -181,22 +182,27 @@ _icon = base64.b64encode((Path(__file__).parent / "src-tauri/icons/128x128.png")
 st.markdown(f"""
 <div class="title-container">
     <h1><img src="data:image/png;base64,{_icon}" alt="Guardian private document" width="64" height="64" style="vertical-align:middle; margin-right:12px"> GUARDIAN MEDICAL DE-IDENTIFIER</h1>
-    <p>Securely extract, catalog, and de-identify patient medical records using local salt-based pseudonymisation</p>
+    <p>Prepare and review medical documents before sharing</p>
 </div>
 """, unsafe_allow_html=True)
 
 # Sidebar Config
 st.sidebar.markdown("### ⚙️ Pipeline Configuration")
+processing_mode = st.sidebar.radio('Processing mode', ['De-identify documents only (faster)',
+    'Prepare for AI (local NER)', 'Create clinical chronology'], index=1)
 
 run_mode = st.sidebar.radio(
     "Execution Mode",
     ["🌟 Gemini API (Cloud)", "🏠 Local Ollama", "🧪 Mock/Dry-Run (No model needed)"],
     index=1,
     help="Choose where inference runs: Google's API, a local Ollama server, or a mock demo."
-)
+) if processing_mode != 'Prepare for AI (local NER)' else 'NER'
 
 # --- Gemini API settings ---
-if run_mode.startswith("🌟"):
+if run_mode == 'NER':
+    st.sidebar.info('NER runs locally on this computer. Ollama and cloud credentials are not used in this workflow.')
+    api_key_input = None
+elif run_mode.startswith("🌟"):
     env_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
     if env_key and "GEMINI_API_KEY" not in st.session_state.get("_manually_saved", []):
         st.sidebar.success("✅ API key auto-detected from environment")
@@ -272,9 +278,10 @@ tab_deidentify, tab_reidentify, tab_catalogue = st.tabs([
 # TAB 1: PROCESS & DE-IDENTIFY
 # ==========================================
 with tab_deidentify:
-    processing_mode = st.radio('Processing mode', ['De-identify documents only (faster)', 'Create clinical chronology'], horizontal=True)
     if processing_mode == 'De-identify documents only (faster)':
         render_batch(dirs)
+    elif processing_mode == 'Prepare for AI (local NER)':
+        render_ner(dirs)
     else:
         st.markdown('<div class="glass-card">', unsafe_allow_html=True)
         st.subheader("1. Ingest Raw Session Data")

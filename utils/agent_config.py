@@ -22,6 +22,10 @@ DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434/v1"
 DEFAULT_OLLAMA_MODEL = "qwen3.5:2b"
 
 
+class ModelOutputError(ValueError):
+    """The model replied, but its output cannot be used as a valid analysis."""
+
+
 def model_timeout_seconds() -> float:
     """Read one finite, positive deadline for both native and media requests."""
     try:
@@ -140,7 +144,7 @@ async def generate_structured(
     except httpx.RequestError:
         raise RuntimeError("Cannot reach Ollama. Check the server URL and that Ollama is running.") from None
     except ValueError:
-        raise ValueError("Ollama returned an invalid JSON response.") from None
+        raise ModelOutputError("Ollama returned an invalid JSON response.") from None
 
     if isinstance(result, dict) and metrics_callback:
         def count(key):
@@ -158,11 +162,11 @@ async def generate_structured(
         })
 
     if not isinstance(result, dict) or result.get("done") is not True or result.get("done_reason") != "stop":
-        raise ValueError("Ollama returned an incomplete response. No report was produced; try a smaller document.")
+        raise ModelOutputError("Ollama returned an incomplete response. No report was produced; try a smaller document.")
     try:
         data = response_schema.model_validate_json(result["message"]["content"])
     except (KeyError, TypeError, ValidationError):
-        raise ValueError(f"Ollama returned invalid {response_schema.__name__} data. No report was produced.") from None
+        raise ModelOutputError(f"Ollama returned invalid {response_schema.__name__} data. No report was produced.") from None
     logging.getLogger(__name__).info(
         "Ollama %s completed in %.2fs (input tokens=%s, output tokens=%s)",
         response_schema.__name__, perf_counter() - started,

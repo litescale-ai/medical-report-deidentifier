@@ -16,6 +16,23 @@ TEXT = ('HPCSA MP 0723444\nPractice No. 1270753\n'
 NUMBERS = ('0723444', '1270753', '(021) 555-0123', '+27 82 555 0199', '0215550124', '+44 20 7946 0958')
 
 class IdentifierRemovalTest(unittest.TestCase):
+    def test_adjacent_pdf_registration_lines_are_both_removed(self):
+        import pymupdf
+        with tempfile.TemporaryDirectory() as directory:
+            source, target = Path(directory) / 'source.pdf', Path(directory) / 'target.pdf'
+            with pymupdf.open() as pdf:
+                page = pdf.new_page()
+                page.insert_text((300, 60), '0723444', fontsize=11)
+                page.insert_text((300, 75.05), '1270753', fontsize=11)
+                page.insert_text((40, 110), 'Dose: 5 mg')
+                pdf.save(source)
+            deidentify_document(str(source), str(target),
+                                {'0723444': '[REGISTRATION REMOVED]', '1270753': '[REGISTRATION REMOVED]'})
+            text = '\n'.join(text for _, text in extract_document(target))
+            self.assertNotIn('0723444', text)
+            self.assertNotIn('1270753', text)
+            self.assertIn('Dose: 5 mg', text)
+
     def test_address_verification_accepts_only_complete_removal_markers(self):
         from utils.identifier_rules import identifier_replacements
         for value in ('[EMAIL REMOVED]                      ;', '[ADDRESS REMOVED]',

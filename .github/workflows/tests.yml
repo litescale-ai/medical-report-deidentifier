@@ -12,4 +12,4 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: python -m pip install -r requirements.txt
-      - run: python -m unittest test_pipeline test_bootstrap test_document_formats test_identifier_removal test_batch test_batch_ui test_reidentification test_reidentification_ui
+      - run: python -m unittest test_pipeline test_bootstrap test_document_formats test_identifier_removal test_batch test_batch_ui test_reidentification test_reidentification_ui test_clinical_packet test_ner_workflow test_ner_ui

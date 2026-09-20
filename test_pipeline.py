@@ -43,7 +43,7 @@ class LocalPipelineTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_timed_out_discovery_splits_once_and_preserves_all_sections(self):
         from unittest.mock import AsyncMock
-        from utils.batch import chunks, discover_names
+        from utils.batch import chunks, discover_names, DiscoveryReview
         text = ('Clinical review. ' * 220) + ' South Africa.'
         response = {'entities': [{'name': 'South Africa', 'kind': 'LOCATION', 'aliases': []}]}
         parts = list(chunks(text, limit=3000))
@@ -55,9 +55,9 @@ class LocalPipelineTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(call.kwargs['metrics_callback'] is metrics for call in generate.await_args_list))
         self.assertEqual(entities[0]['canonical_name'], 'South Africa')
         with patch('utils.batch.generate_structured', AsyncMock(side_effect=TimeoutError('deadline'))) as generate:
-            with self.assertRaises(TimeoutError):
+            with self.assertRaises(DiscoveryReview):
                 await discover_names(text, model='test', base_url='http://localhost')
-        self.assertEqual(generate.await_count, 2)  # Original and first smaller piece; no endless retries.
+        self.assertEqual(generate.await_count, 1 + len(parts))  # Every smaller piece is attempted once.
 
     async def test_default_model_and_explicit_overrides_reach_ollama(self):
         import os
@@ -249,7 +249,7 @@ class PdfRedactionTest(unittest.TestCase):
             extracted = []
             original = pymupdf.Page.get_text
             def get_text(page, *args, **kwargs):
-                if args and args[0] == "dict":
+                if args and args[0] in {"dict", "rawdict"}:
                     extracted.append(page.number)
                 return original(page, *args, **kwargs)
             with patch.object(pymupdf.Page, "get_text", get_text):

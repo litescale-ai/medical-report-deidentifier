@@ -140,7 +140,7 @@ def _ocr_pdf(input_path: str) -> str:
     return ocr_path
 
 
-def _redact_pdf(input_path: str, output_path: str, replacement_map: dict[str, str]) -> int:
+def _redact_pdf(input_path: str, output_path: str, replacement_map: dict[str, str], *, keep_terms=()) -> int:
     """Core redaction logic: search → redact → insert replacement text.
 
     Returns the total number of replacements made.
@@ -155,21 +155,40 @@ def _redact_pdf(input_path: str, output_path: str, replacement_map: dict[str, st
         replacements = []
         blocks = None
         words = page.get_text("words")
+        protected = [rect for term in keep_terms for rect in page.search_for(term)]
         for target in sorted_keys:
             if not target.strip():
                 continue
             rects = page.search_for(target)
             if rects and blocks is None:
-                blocks = page.get_text("dict")["blocks"]
+                blocks = page.get_text("rawdict")["blocks"]
+                characters = [char for block in blocks for line in block.get('lines', [])
+                              for span in line['spans'] for char in span['chars']]
             for rect in rects:
                 # search_for is case-insensitive and also finds Lee inside sleep.
                 # Check the matched fragment against whole surrounding PDF words.
-                fragment = target if len(target.split()) == 1 else ' '.join(page.get_textbox(rect).split())
                 surrounding = ' '.join(word[4] for word in words
-                                       if pymupdf.Rect(word[:4]).intersects(rect))
-                if not fragment or not re.search(replacement_pattern([fragment]), surrounding, re.IGNORECASE):
+                                       if pymupdf.Rect(word[:4]).intersects(rect)
+                                       and rect.y0 <= (word[1] + word[3]) / 2 <= rect.y1)
+                # A wrapped match has one rectangle per line. get_textbox can
+                # include neighbouring lines whose font boxes touch this one.
+                fragment = target if len(target.split()) == 1 else ''.join(
+                    char['c'] for char in characters
+                    if rect.x0 <= (char['bbox'][0] + char['bbox'][2]) / 2 <= rect.x1
+                    and rect.y0 <= (char['bbox'][1] + char['bbox'][3]) / 2 <= rect.y1).strip()
+                # Font boxes can touch the next line, adding unrelated text to
+                # get_textbox. Prefer the actual target in this line's words.
+                whole_target = re.search(replacement_pattern([' '.join(target.split())]), surrounding, re.IGNORECASE)
+                if not whole_target and (not fragment or not re.search(replacement_pattern([fragment]), surrounding, re.IGNORECASE)):
                     continue
-                if any(rect.intersects(existing) for existing, _, _ in replacements):
+                if any((rect & kept).get_area() > 0.9 * rect.get_area() for kept in protected):
+                    continue
+                if any((rect & kept).get_area() > 0.1 * min(rect.get_area(), kept.get_area()) for kept in protected):
+                    raise ValueError('A PDF identifier overlaps a keep term. Review the keep list before exporting.')
+                # Adjacent lines can overlap at their font-box edges. Only a
+                # majority overlap represents the same text being replaced twice.
+                if any((rect & existing).get_area() > 0.5 * min(rect.get_area(), existing.get_area())
+                       for existing, _, _ in replacements):
                     continue
                 style = _extract_span_style(blocks, rect)
                 replacements.append((rect, replacement_map[target], style))
@@ -212,6 +231,7 @@ def deidentify_pdf(
     input_path: str,
     output_path: str,
     replacement_map: dict[str, str],
+    *, keep_terms=(),
 ) -> bool:
     """Replace known identifiers, OCRing image-only pages before editing.
 
@@ -228,7 +248,7 @@ def deidentify_pdf(
     try:
         if needs_ocr:
             ocr_path = _ocr_pdf(input_path)
-        _redact_pdf(ocr_path or input_path, output_path, replacement_map)
+        _redact_pdf(ocr_path or input_path, output_path, replacement_map, keep_terms=keep_terms)
         return True
     finally:
         if ocr_path and os.path.exists(ocr_path):
