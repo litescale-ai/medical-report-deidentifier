@@ -156,12 +156,17 @@ also need the original combined report or media-transcription workflow.
 Chronology and entity discovery use Ollama's native
 structured output with schema validation and thinking disabled. Discovery reads
 the original extracted text as well as the chronology, so omitted summary details
-are still considered. Requests do not retry or fall back to a cloud service.
+are still considered. Processing stays on the selected backend without cloud fallback.
 
 The UI shows elapsed time while each stage runs and uses the Ollama model/server
 configured by the installer. Each native request has a total deadline of 120
 seconds; set a finite positive `MODEL_TIMEOUT_SECONDS` if larger documents need
-more time. Invalid or truncated responses stop processing rather than becoming
+more time. In document-only mode, a timed-out section longer than 3,000 characters
+gets one recovery pass using smaller overlapping pieces, each with its own request
+deadline. If any smaller piece fails, the document is withheld. Identifier matching
+accepts case and whitespace differences but always replaces exact text found in the
+source; identifiers absent from the source still cause a failure.
+Invalid or truncated responses stop processing rather than becoming
 an empty report. Image, audio and video transcription retain the selected
 backend's SDK media path; SDK cleanup can extend the configured deadline.
 

@@ -15,6 +15,50 @@ from agents.transcriber import transcribe_media, ExtractedTranscript
 
 
 class LocalPipelineTest(unittest.IsolatedAsyncioTestCase):
+    async def test_discovery_uses_source_spans_for_case_and_spacing_variants(self):
+        from unittest.mock import AsyncMock
+        from utils.batch import discover_names
+        from utils.identifier_rules import replace_data
+        response = {'entities': [{'name': 'South Africa', 'kind': 'LOCATION',
+                                  'aliases': ['country of operation for address changes']}]}
+        text = 'Jurisdiction: SOUTH  AFRICA. Office: South\nAfrica. Visit south africa.'
+        with patch('utils.batch.generate_structured', AsyncMock(return_value=response)):
+            entities = await discover_names(text, model='test', base_url='http://localhost')
+        entity = entities[0]
+        spans = [entity['canonical_name'], *entity['variations']]
+        self.assertEqual(set(spans), {'SOUTH  AFRICA', 'South\nAfrica', 'south africa'})
+        self.assertTrue(all(span in text for span in spans))
+        self.assertEqual(replace_data(text, dict.fromkeys(spans, '[LOCATION]')),
+                         'Jurisdiction: [LOCATION]. Office: [LOCATION]. Visit [LOCATION].')
+
+    async def test_discovery_still_rejects_invented_and_partial_identifiers(self):
+        from unittest.mock import AsyncMock
+        from utils.batch import discover_names
+        for name, text in (('South Africa', 'Jurisdiction: France.'), ('Ann', 'Annual review.'),
+                           ('123', 'Reference: 1234'), ('', 'No names.')):
+            response = {'entities': [{'name': name, 'kind': 'IDENTIFIER', 'aliases': []}]}
+            with self.subTest(name=name), patch('utils.batch.generate_structured', AsyncMock(return_value=response)):
+                with self.assertRaisesRegex(ValueError, 'absent|empty'):
+                    await discover_names(text, model='test', base_url='http://localhost')
+
+    async def test_timed_out_discovery_splits_once_and_preserves_all_sections(self):
+        from unittest.mock import AsyncMock
+        from utils.batch import chunks, discover_names
+        text = ('Clinical review. ' * 220) + ' South Africa.'
+        response = {'entities': [{'name': 'South Africa', 'kind': 'LOCATION', 'aliases': []}]}
+        parts = list(chunks(text, limit=3000))
+        replies = [TimeoutError('deadline'), {'entities': []}, response]
+        metrics = lambda measured: None
+        with patch('utils.batch.generate_structured', AsyncMock(side_effect=replies)) as generate:
+            entities = await discover_names(text, model='test', base_url='http://localhost', metrics_callback=metrics)
+        self.assertEqual([call.args[0] for call in generate.await_args_list], [text, *parts])
+        self.assertTrue(all(call.kwargs['metrics_callback'] is metrics for call in generate.await_args_list))
+        self.assertEqual(entities[0]['canonical_name'], 'South Africa')
+        with patch('utils.batch.generate_structured', AsyncMock(side_effect=TimeoutError('deadline'))) as generate:
+            with self.assertRaises(TimeoutError):
+                await discover_names(text, model='test', base_url='http://localhost')
+        self.assertEqual(generate.await_count, 2)  # Original and first smaller piece; no endless retries.
+
     async def test_default_model_and_explicit_overrides_reach_ollama(self):
         import os
         for environment, selected, expected in (
