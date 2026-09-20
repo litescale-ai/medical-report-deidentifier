@@ -189,6 +189,8 @@ def extract_document(path):
     if ext == ".pdf":
         import pymupdf
         with pymupdf.open(path) as document:
+            if document.is_encrypted:
+                raise ValueError('This PDF is password-protected. Save an unlocked copy and retry.')
             sections = []
             for page in document:
                 # Redaction inserts replacement spans after the original content stream.

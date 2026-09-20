@@ -178,6 +178,8 @@ def prepare_source(source, cache_dir, fingerprint):
         return source
     import pymupdf
     with pymupdf.open(source) as pdf:
+        if pdf.is_encrypted:
+            raise ValueError('This PDF is password-protected. Save an unlocked copy and retry.')
         needs_ocr = any(not page.get_text().strip() and page.get_images() for page in pdf)
     if not needs_ocr:
         return source

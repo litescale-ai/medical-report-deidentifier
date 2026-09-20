@@ -12,6 +12,25 @@ TEXT = 'Patient: Alex Example. HPCSA MP 0723444. Practice No. 1270753. Tel: 0215
 ENTITY = dict(canonical_name='Alex Example', entity_type='PATIENT', variations=['Alex Example'], relationship_context='')
 
 class BatchTest(unittest.IsolatedAsyncioTestCase):
+    async def test_locked_pdf_fails_before_page_access_or_model_calls(self):
+        import pymupdf
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'input'
+            root.mkdir()
+            source = root / 'locked.pdf'
+            with pymupdf.open() as pdf:
+                pdf.new_page().insert_text((40, 60), 'Private document')
+                pdf.save(source, encryption=pymupdf.PDF_ENCRYPT_AES_256,
+                         owner_pw='test-owner', user_pw='test-reader')
+            with self.assertRaisesRegex(ValueError, 'password-protected.*unlocked copy'):
+                extract_document(source)
+            with patch('utils.batch.discover_names', AsyncMock()) as model:
+                result = await process_batch([source], root=root, output=Path(directory) / 'output',
+                                             secure=Path(directory) / 'secure', model_revision='test-model')
+            model.assert_not_awaited()
+            self.assertFalse(result['completed'])
+            self.assertRegex(result['failed']['locked.pdf'], 'password-protected.*unlocked copy')
+
     async def test_pdf_email_removal_passes_verification(self):
         import pymupdf
         with tempfile.TemporaryDirectory() as directory:
