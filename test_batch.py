@@ -12,6 +12,28 @@ TEXT = 'Patient: Alex Example. HPCSA MP 0723444. Practice No. 1270753. Tel: 0215
 ENTITY = dict(canonical_name='Alex Example', entity_type='PATIENT', variations=['Alex Example'], relationship_context='')
 
 class BatchTest(unittest.IsolatedAsyncioTestCase):
+    async def test_pdf_email_removal_passes_verification(self):
+        import pymupdf
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'input'
+            root.mkdir()
+            source = root / 'email.pdf'
+            with pymupdf.open() as pdf:
+                page = pdf.new_page()
+                page.insert_text((40, 60), 'Email address:')
+                page.insert_text((60, 80), 'person@example.test')
+                page.insert_text((400, 80), ';')
+                page.insert_text((40, 110), 'Dose: 5 mg')
+                pdf.save(source)
+            with patch('utils.batch.discover_names', AsyncMock(return_value=[])):
+                result = await process_batch([source], root=root, output=Path(directory) / 'output',
+                                             secure=Path(directory) / 'secure', model_revision='test-model')
+            self.assertFalse(result['failed'])
+            self.assertEqual(len(result['completed']), 1)
+            text = '\n'.join(text for _, text in extract_document(result['completed'][0]))
+            self.assertNotIn('person@example.test', text)
+            self.assertIn('Dose: 5 mg', text)
+
     async def test_retry_failed_with_same_then_different_model_preserves_success(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'input'

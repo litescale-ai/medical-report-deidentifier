@@ -16,6 +16,18 @@ TEXT = ('HPCSA MP 0723444\nPractice No. 1270753\n'
 NUMBERS = ('0723444', '1270753', '(021) 555-0123', '+27 82 555 0199', '0215550124', '+44 20 7946 0958')
 
 class IdentifierRemovalTest(unittest.TestCase):
+    def test_address_verification_accepts_only_complete_removal_markers(self):
+        from utils.identifier_rules import identifier_replacements
+        for value in ('[EMAIL REMOVED]                      ;', '[ADDRESS REMOVED]',
+                      '[EMAIL REMOVED]; [EMAIL REMOVED].'):
+            with self.subTest(value=value):
+                self.assertEqual(identifier_replacements('Email address:\n' + value), {})
+        for value in ('[ADDRESS REMOVED], 12 Fiction Road',
+                      '12 Fiction Road [ADDRESS REMOVED]',
+                      '[EMAIL REMOVED]; person@example.test'):
+            with self.subTest(value=value):
+                self.assertEqual(identifier_replacements('Address: ' + value)[value], '[ADDRESS REMOVED]')
+
     def assert_removed(self, text):
         for number in NUMBERS:
             self.assertNotIn(number, text)

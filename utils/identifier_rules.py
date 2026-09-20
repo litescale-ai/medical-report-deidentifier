@@ -46,7 +46,10 @@ def identifier_replacements(data):
     for text in text_values(data):
         for match in _ADDRESS.finditer(text):
             address = match['address'].strip()
-            if address and '[ADDRESS REMOVED]' not in address and not re.match(r'^[A-Za-z ]+:', address):
+            # PDF extraction can leave a removed email under an address label,
+            # with spacing and separators. Only ignore fully removed values.
+            removed = re.fullmatch(r'(?:\[(?:ADDRESS|EMAIL) REMOVED\][\s;,.]*)+', address)
+            if address and not removed and not re.match(r'^[A-Za-z ]+:', address):
                 replacements[address] = '[ADDRESS REMOVED]'
         for match in _LABELLED.finditer(text):
             number = match['number']
