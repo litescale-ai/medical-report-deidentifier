@@ -12,6 +12,43 @@ from test_clinical_packet import Detector, person
 
 
 class NerUiTest(unittest.TestCase):
+    def test_multiple_markdown_editors_save_matching_files_and_reset_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            dirs = {name: str(home / name) for name in ('input', 'output', 'secure')}
+            for path in dirs.values():
+                Path(path).mkdir()
+            for number in (1, 2):
+                (home / 'input' / f'private-{number}.txt').write_text(f'Clinical observation {number}.')
+            with patch('utils.helpers.get_data_dirs', return_value=dirs), patch(
+                'utils.ner_ui.importlib.util.find_spec', return_value=object()), patch(
+                'utils.ner_ui.load_ner', return_value=Detector([])):
+                app = AppTest.from_file('app.py').run()
+                app.radio(key='ner_format').set_value('Markdown documents').run()
+                next(item for item in app.text_input if item.label == 'Input folder').set_value(dirs['input']).run()
+                app.checkbox(key='ner_one_patient').check().run()
+                next(item for item in app.button if item.label == 'Prepare documents').click().run()
+                self.assertFalse(app.exception)
+                result = app.session_state['ner_result']
+                editor = next(item for item in app.text_area if item.label == 'Reviewed Markdown — document-002.md')
+                editor.set_value(editor.value + '\nReviewed the second document.').run()
+                next(item for item in app.checkbox if item.label.startswith('I reviewed all')).check().run()
+                next(item for item in app.button if item.label == 'Save reviewed outputs').click().run()
+                self.assertFalse(app.exception)
+                exports = app.session_state['ner_approved']['files']
+                self.assertEqual([Path(path).name for path in exports], ['document-001.md', 'document-002.md'])
+                self.assertNotIn('Reviewed the second document.', Path(exports[0]).read_text())
+                self.assertIn('Reviewed the second document.', Path(exports[1]).read_text())
+                self.assertNotIn('Clinical observation 2.', Path(exports[0]).read_text())
+                self.assertNotIn('Clinical observation 1.', Path(exports[1]).read_text())
+                editor = next(item for item in app.text_area if item.label == 'Reviewed Markdown — document-001.md')
+                editor.set_value(editor.value + '\nA further edit.').run()
+                self.assertTrue(next(item for item in app.button if item.label == 'Save reviewed outputs').disabled)
+                self.assertFalse(any(item.label == 'Download document-001.md' for item in app.get('download_button')))
+                manifest = json.loads((Path(result['output']) / 'PRIVATE.json').read_text())
+                self.assertEqual([entry['original_name'] for entry in manifest['filename_mapping']],
+                                 ['private-1.txt', 'private-2.txt'])
+
     def test_select_both_prepare_compare_edit_approve_and_save_keep_terms(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
@@ -49,7 +86,7 @@ class NerUiTest(unittest.TestCase):
                 previous.write_bytes((home / 'input/source.pdf').read_bytes())
                 next(item for item in app.text_input if item.label == 'Markdown output folder').set_value(str(selected_output)).run()
                 next(item for item in app.text_input if item.label == 'PDF output folder').set_value(str(pdf_output)).run()
-                app.radio(key='ner_format').set_value('Markdown packet').run()
+                app.radio(key='ner_format').set_value('Markdown documents').run()
                 self.assertFalse(any(item.label == 'PDF output folder' for item in app.text_input))
                 app.radio(key='ner_format').set_value('Both').run()
                 self.assertEqual(app.text_input(key='ner_pdf_output_folder').value, str(pdf_output))
@@ -66,6 +103,7 @@ class NerUiTest(unittest.TestCase):
                 self.assertEqual(len(result['pdfs']), 1)
                 statuses = next(item.value for item in app.dataframe if 'File' in item.value.columns)
                 self.assertEqual(statuses.iloc[0]['File'], 'source.pdf')
+                self.assertEqual(statuses.iloc[0]['New filename'], 'document-001.pdf')
                 self.assertEqual(statuses.iloc[0]['PDF'], 'Ready for review')
                 self.assertEqual(next(item for item in app.selectbox if item.label == 'Page or section').options,
                                  ['source.pdf, page 1'])
@@ -81,21 +119,24 @@ class NerUiTest(unittest.TestCase):
                 self.assertFalse(app.exception)
                 self.assertEqual(len(app.session_state['ner_approved']['files']), 2)
                 self.assertEqual(app.session_state['ner_approved']['files'],
-                                 [str(selected_output / 'source-redacted.md'),
-                                  str(pdf_output / 'source-redacted.pdf')])
+                                 [str(selected_output / 'document-001.md'),
+                                  str(pdf_output / 'document-001.pdf')])
                 self.assertIn(str(selected_output), [item.value for item in app.code])
                 self.assertEqual(previous.read_bytes(), (home / 'input/source.pdf').read_bytes())
                 manifest = json.loads((Path(result['output']) / 'PRIVATE.json').read_text())
                 self.assertEqual(manifest['verification'], 'user_approved')
-                next(item for item in app.text_area if item.label == 'Reviewed Markdown').set_value(result['markdown'] + '\nEdited').run()
+                self.assertEqual(manifest['filename_mapping'][0]['original_name'], 'source.pdf')
+                self.assertEqual(manifest['filename_mapping'][0]['reviewed_outputs'], {
+                    'markdown': str(selected_output / 'document-001.md'), 'pdf': str(pdf_output / 'document-001.pdf')})
+                next(item for item in app.text_area if item.label == 'Reviewed Markdown — document-001.md').set_value(result['markdown_documents']['document-001.md'] + '\nEdited').run()
                 self.assertTrue(next(item for item in app.button if item.label == 'Save reviewed outputs').disabled)
-                self.assertFalse(any(item.label == 'Download source-redacted.pdf' for item in app.get('download_button')))
-                edited = result['markdown'] + '\nAlex Example called 0215550123.'
-                next(item for item in app.text_area if item.label == 'Reviewed Markdown').set_value(edited).run()
+                self.assertFalse(any(item.label == 'Download document-001.pdf' for item in app.get('download_button')))
+                edited = result['markdown_documents']['document-001.md'] + '\nAlex Example called 0215550123.'
+                next(item for item in app.text_area if item.label == 'Reviewed Markdown — document-001.md').set_value(edited).run()
                 self.assertFalse(app.exception)
                 flagged = next(item.value for item in app.dataframe if 'Flagged text' in item.value.columns)
                 self.assertEqual(set(flagged['Flagged text']), {'Alex Example', '0215550123'})
-                self.assertTrue(all(flagged['Packet line'] > 0))
+                self.assertTrue(all(flagged['Markdown line'] > 0))
                 next(item for item in app.checkbox if item.label.startswith('I reviewed all')).check().run()
                 self.assertTrue(next(item for item in app.button if item.label == 'Save reviewed outputs').disabled)
                 next(item for item in app.checkbox if item.label == 'Keep the flagged text and save anyway.').check().run()
@@ -108,7 +149,7 @@ class NerUiTest(unittest.TestCase):
                 manifest = json.loads((Path(result['output']) / 'PRIVATE.json').read_text())
                 self.assertEqual(manifest['verification'], 'user_override')
                 self.assertEqual(manifest['reviews'][-1]['note'], 'Synthetic review override.')
-                next(item for item in app.text_area if item.label == 'Reviewed Markdown').set_value(edited + ' Changed.').run()
+                next(item for item in app.text_area if item.label == 'Reviewed Markdown — document-001.md').set_value(edited + ' Changed.').run()
                 self.assertFalse(next(item for item in app.checkbox if item.label == 'Keep the flagged text and save anyway.').value)
                 self.assertTrue(next(item for item in app.button if item.label == 'Save reviewed outputs').disabled)
                 # Withheld PDFs remain visible under their filenames, even when no PDF can be downloaded.
@@ -120,7 +161,7 @@ class NerUiTest(unittest.TestCase):
                 statuses = next(item.value for item in app.dataframe if 'File' in item.value.columns)
                 row = statuses.loc[statuses['File'] == 'source.pdf'].iloc[0]
                 self.assertEqual(row['PDF'], 'Failed')
-                self.assertEqual(row['Markdown'], 'Included in packet')
+                self.assertEqual(row['Markdown'], 'Ready for review')
                 self.assertIn('Alex Example', row['Error'])
                 self.assertTrue(any(item.label == 'Flagged text in source.pdf' for item in app.expander))
 

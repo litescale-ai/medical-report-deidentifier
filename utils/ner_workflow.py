@@ -10,7 +10,8 @@ from time import perf_counter
 from utils.batch import file_digest, prepare_source, save_private, read_json
 from utils.batch_stats import utc_now
 from utils.clinical_packet import (extract_case, prepare_packet, write_packet, approve_packet,
-                                   reviewed_term_pattern, rule_replacements, packet_findings)
+                                   reviewed_term_pattern, rule_replacements, packet_findings,
+                                   Section, render_packet)
 from utils.document_editor import deidentify_pdf
 from utils.document_formats import extract_document
 from utils.identifier_rules import replacement_pattern, replace_data
@@ -19,7 +20,7 @@ from utils.hashing import generate_pseudonym_hash
 
 def document_label(location, names):
     """Resolve internal document numbers to original relative filenames for display."""
-    match = re.match(r'^Document (\d+)(.*)$', location)
+    match = re.match(r'^(?:Document |document-)(\d+)(.*)$', location)
     if match and 0 < int(match[1]) <= len(names):
         return names[int(match[1]) - 1] + match[2]
     return location
@@ -45,6 +46,13 @@ async def prepare_outputs(files, *, output, secure, detector, formats, keep_term
         raise ValueError('Select documents first.')
     root = Path(source_root).expanduser().resolve() if source_root else Path(os.path.commonpath([p.parent for p in files]))
     relative_sources = [str(path.relative_to(root)) for path in files]
+    filename_mapping = [
+        {'document': number, 'original_name': original,
+         'new_name': f'document-{number:03d}{path.suffix.lower()}',
+         'outputs': {kind: f'document-{number:03d}.' + ('md' if kind == 'markdown' else 'pdf')
+                     for kind in formats}}
+        for number, (path, original) in enumerate(zip(files, relative_sources), 1)
+    ]
     destination = Path(export_folder).expanduser().absolute() if export_folder else root.with_name(root.name + '-redacted')
     destinations = {kind: str(destination) for kind in formats}
     if export_folders is not None:
@@ -56,8 +64,6 @@ async def prepare_outputs(files, *, output, secure, detector, formats, keep_term
     for value in destinations.values():
         if Path(value).resolve() == root or root.is_relative_to(Path(value).resolve()):
             raise ValueError('Choose an export folder separate from the source folder.')
-    packet_name = files[0].stem + '-redacted.md' if len(files) == 1 else (
-        root.name + '-redacted.md' if source_root else destination.name.removesuffix('-redacted') + '-redacted.md')
     if not formats or set(formats) - {'markdown', 'pdf'}:
         raise ValueError('Choose Markdown, PDFs or both.')
     if 'pdf' in formats and any(path.suffix.lower() != '.pdf' for path in files):
@@ -68,9 +74,19 @@ async def prepare_outputs(files, *, output, secure, detector, formats, keep_term
     fingerprints = [file_digest(path) for path in files]
     with tempfile.TemporaryDirectory(prefix='.ner-source-', dir=output.parent) as temporary:
         prepared = []
-        for number, (path, fingerprint) in enumerate(zip(files, fingerprints), 1):
+        cache = Path(temporary) / 'ocr'
+        cache.mkdir(mode=0o700)
+        for number, (path, fingerprint, naming) in enumerate(zip(files, fingerprints, filename_mapping), 1):
             progress(f'Reading {number} / {len(files)}: {relative_sources[number - 1]}')
-            prepared.append(prepare_source(path, Path(temporary), fingerprint))
+            # Process neutral working filenames; source files and their paths stay untouched.
+            working = Path(temporary) / naming['new_name']
+            with working.open('xb') as target, path.open('rb') as source:
+                os.chmod(working, 0o600)
+                shutil.copyfileobj(source, target)
+            readable = prepare_source(working, cache, fingerprint)
+            if readable != working:
+                shutil.copyfile(readable, working)
+            prepared.append(working)
         sections = extract_case(prepared)
         result = await prepare_packet(sections, detector, keep_terms=keep_terms, remove_terms=remove_terms,
             on_progress=lambda done, total: progress(f'Identifying section {done} / {total}: '
@@ -81,6 +97,14 @@ async def prepare_outputs(files, *, output, secure, detector, formats, keep_term
                   for token, values in result['mapping'].items()}
         result['markdown'] = replace_data(result['markdown'], tokens)
         result['cleaned'] = replace_data(result['cleaned'], tokens)
+        markdown_documents = {}
+        for naming in filename_mapping:
+            number = naming['document']
+            markdown_documents[f'document-{number:03d}.md'] = render_packet([
+                Section(section.source.replace(f'Document {number},', f'document-{number:03d},', 1), text)
+                for section, text in zip(sections, result['cleaned'])
+                if section.source.startswith(f'Document {number},')
+            ])
         result['replacements'] = {value: tokens.get(replacement, replacement) for value, replacement in result['replacements'].items()}
         result['mapping'] = {tokens[token]: values for token, values in result['mapping'].items()}
         catalogue_path = Path(secure) / 'identity_catalogue.json'
@@ -97,13 +121,14 @@ async def prepare_outputs(files, *, output, secure, detector, formats, keep_term
             result['stats']['identity_types'][kind] = result['stats']['identity_types'].get(kind, 0) + 1
         if fingerprints != [file_digest(path) for path in files]:
             raise ValueError('A source changed during processing. Prepare it again.')
+        result.update(filename_mapping=filename_mapping, markdown_documents=markdown_documents)
         write_packet(result, output, files)
         pdfs, failures, failure_details = [], {}, {}
         if 'pdf' in formats:
             for number, path in enumerate(prepared, 1):
                 name = relative_sources[number - 1]
                 progress(f'Redacting PDF {number} / {len(files)}: {name}')
-                target = output / f'REVIEW_REQUIRED-Document-{number}.pdf'
+                target = output / f'REVIEW_REQUIRED-document-{number:03d}.pdf'
                 checked = []
                 try:
                     deidentify_pdf(str(path), str(target), result['replacements'], keep_terms=keep_terms)
@@ -125,8 +150,9 @@ async def prepare_outputs(files, *, output, secure, detector, formats, keep_term
                     failures[name] = message
                     progress(f'PDF failed: {name}: {message}')
         result.update(output=str(output), formats=list(formats), pdfs=pdfs, failed=failures,
+                      filename_mapping=filename_mapping, markdown_documents=markdown_documents,
                       failure_details=failure_details,
-                      source_names=relative_sources, export_folder=str(destination), export_folders=destinations, packet_name=packet_name,
+                      source_names=relative_sources, export_folder=str(destination), export_folders=destinations,
                       sections=[{'source': s.source, 'text': s.text} for s in sections])
         result['stats']['elapsed_seconds'] = round(perf_counter() - started, 2)
         result['stats']['model_load_seconds'] = round(model_load_seconds, 2)
@@ -134,8 +160,9 @@ async def prepare_outputs(files, *, output, secure, detector, formats, keep_term
         result['stats'].update(pdf_completed=len(pdfs), pdf_failed=len(failures))
         private = json.loads((output / 'PRIVATE.json').read_text())
         private.update(stats=result['stats'], formats=list(formats), pdfs=pdfs, failed=failures,
+                       filename_mapping=filename_mapping,
                        failure_details=failure_details,
-                       source_names=relative_sources, export_folder=str(destination), export_folders=destinations, packet_name=packet_name,
+                       source_names=relative_sources, export_folder=str(destination), export_folders=destinations,
                        source_sha256=fingerprints, remove_terms=list(remove_terms), verification='needs_review')
         save_private(output / 'PRIVATE.json', private)
         return result
@@ -189,10 +216,23 @@ def approve_outputs(result, markdown, *, override=False, review_note=''):
         if file_digest(pdf['path']) != pdf['sha256']:
             raise ValueError('A PDF draft changed outside Guardian. Prepare it again before approving.')
     exports = []
+    markdown_names = []
     if 'markdown' in result['formats']:
-        exports.append(str(approve_packet(output, markdown, override=override, review_note=review_note)))
+        if 'markdown_documents' in result:
+            markdown_names = list(result['markdown_documents'])
+            if not isinstance(markdown, dict):
+                if len(markdown_names) != 1:
+                    raise ValueError('Review one Markdown file per source document.')
+                markdown = {markdown_names[0]: markdown}
+            if set(markdown) != set(markdown_names):
+                raise ValueError('Review one Markdown file per source document.')
+            texts = [markdown[name] for name in markdown_names]
+        else:
+            texts = [markdown]
+        for text in texts:
+            exports.append(str(approve_packet(output, text, override=override, review_note=review_note)))
     for pdf in result['pdfs']:
-        target = output / f'REVIEWED-Document-{pdf["document"]}.pdf'
+        target = output / f'REVIEWED-document-{pdf["document"]:03d}.pdf'
         if target.exists() and file_digest(target) != pdf['sha256']:
             raise ValueError('A reviewed PDF was edited outside Guardian. Prepare a new run.')
         if not target.exists():
@@ -209,12 +249,17 @@ def approve_outputs(result, markdown, *, override=False, review_note=''):
     destination = Path(result.get('export_folder', root.with_name(root.name + '-redacted')))
     relative_targets = []
     if 'markdown' in result['formats']:
-        relative_targets.append(Path(result.get('packet_name', (sources[0].stem if len(sources) == 1 else root.name) + '-redacted.md')))
+        relative_targets.extend(Path(name) for name in markdown_names or [result.get('packet_name',
+            (sources[0].stem if len(sources) == 1 else root.name) + '-redacted.md')])
     for pdf in result['pdfs']:
-        original = Path(names[pdf['document'] - 1])
-        relative_targets.append(original.with_name(original.stem + '-redacted' + original.suffix))
+        if 'filename_mapping' in private:
+            relative_targets.append(Path(private['filename_mapping'][pdf['document'] - 1]['new_name']))
+        else:
+            original = Path(names[pdf['document'] - 1])
+            relative_targets.append(original.with_name(original.stem + '-redacted' + original.suffix))
     destinations = result.get('export_folders', {kind: str(destination) for kind in result['formats']})
-    kinds = (['markdown'] if 'markdown' in result['formats'] else []) + ['pdf'] * len(result['pdfs'])
+    markdown_count = len(relative_targets) - len(result['pdfs'])
+    kinds = ['markdown'] * markdown_count + ['pdf'] * len(result['pdfs'])
     groups = {}
     for kind, source, relative in zip(kinds, exports, relative_targets):
         groups.setdefault(destinations[kind], []).append((kind, source, relative))
@@ -229,10 +274,17 @@ def approve_outputs(result, markdown, *, override=False, review_note=''):
             Path(path).unlink(missing_ok=True)
         raise
     exports = named_exports
-    verification = private['reviews'][-1]['verification'] if 'markdown' in result['formats'] else 'user_approved'
+    verification = ('user_override' if markdown_count and any(
+        review['verification'] == 'user_override' for review in private['reviews'][-markdown_count:]) else 'user_approved')
     private.update(verification='partially_approved' if result['failed'] else verification,
                    approved_at=utc_now(), reviewed_outputs=exports,
-                   reviewed_markdown_sha256=file_digest(exports[0]) if 'markdown' in result['formats'] else None)
+                   reviewed_markdown_sha256={Path(path).name: file_digest(path) for path in exports if Path(path).suffix == '.md'})
+    for naming in private.get('filename_mapping', []):
+        naming['reviewed_outputs'] = {
+            kind: str(Path(reviewed_folders[kind]) / name)
+            for kind, name in naming['outputs'].items()
+            if kind in reviewed_folders and str(Path(reviewed_folders[kind]) / name) in exports
+        }
     private.setdefault('export_history', []).append({'folders': reviewed_folders, 'files': exports,
                                                      'at': utc_now(), 'verification': private['verification']})
     save_private(manifest, private)

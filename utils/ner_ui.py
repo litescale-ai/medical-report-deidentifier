@@ -1,7 +1,8 @@
-"""Prepare a local NER review packet, redacted PDFs, or both for one patient."""
+"""Prepare local NER Markdown documents, redacted PDFs, or both for one patient."""
 import asyncio
 from hashlib import sha256
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -27,7 +28,7 @@ def load_ner():
 def render_ner(dirs):
     st.subheader('Prepare for AI with local NER')
     st.caption('Select documents for one patient. Detect identifying text locally, preserve reviewed clinical terms, '
-               'then compare the originals with a Markdown packet, redacted PDFs, or both.')
+               'then review one Markdown file, redacted PDF, or both for each source document.')
     available = all(importlib.util.find_spec(name) is not None for name in ('gliner', 'torch', 'transformers'))
     if not available:
         st.info('Local NER support needs a one-time installation. The first run also downloads the model. '
@@ -52,7 +53,7 @@ def render_ner(dirs):
             save_keep_terms(terms_path, unique_terms(terms_text.splitlines()))
             st.success('Keep terms saved for future runs.')
     keep_terms = unique_terms(terms_text.splitlines())
-    output_choice = st.radio('Output format', ['Markdown packet', 'Redacted PDFs', 'Both'], index=2, horizontal=True, key='ner_format')
+    output_choice = st.radio('Output format', ['Markdown documents', 'Redacted PDFs', 'Both'], index=2, horizontal=True, key='ner_format')
     formats = ['markdown', 'pdf'] if output_choice == 'Both' else ['pdf'] if output_choice == 'Redacted PDFs' else ['markdown']
     st.caption('PDF output preserves page appearance and accepts PDF inputs. Markdown accepts all supported document types. '
                'Review scans and tables against the originals; extracted text can miss visual details.')
@@ -156,7 +157,8 @@ def render_ner(dirs):
     completed_pdfs = {pdf['document'] for pdf in result['pdfs']}
     st.write('Status of every selected document')
     st.dataframe([{'File': name,
-                   'Markdown': 'Included in packet' if 'markdown' in result['formats'] else 'Not selected',
+                   'New filename': result['filename_mapping'][number - 1]['new_name'] if 'filename_mapping' in result else name,
+                   'Markdown': 'Ready for review' if 'markdown' in result['formats'] else 'Not selected',
                    'PDF': ('Failed' if name in failures else 'Ready for review' if number in completed_pdfs else 'Not selected'),
                    'Error': failures.get(name, '')}
                   for number, name in enumerate(names, 1)], hide_index=True)
@@ -174,16 +176,17 @@ def render_ner(dirs):
     destinations = result.get('export_folders', {kind: result.get('export_folder', '') for kind in result['formats']})
     for kind, folder in destinations.items():
         st.caption(f'{kind.upper()} output folder: {folder}')
-    st.caption('Original filenames and subfolders are retained, with -redacted added. '
+    st.caption('Working copies use sequential names such as document-001. PDF and Markdown exports use matching names. '
+               'The private manifest records the original filenames and paths. '
                'If filenames conflict, a numbered sibling folder is used for that format.')
     st.warning('Review every page for missed identities and altered clinical content before sharing. '
                'Keep PRIVATE.json local. The Re-identify tab can restore names using this machine’s catalogue; '
                'removal markers stay removed.')
-    views = (['Markdown packet'] if 'markdown' in result['formats'] else []) + (['Redacted PDFs'] if result['pdfs'] else [])
+    views = (['Markdown documents'] if 'markdown' in result['formats'] else []) + (['Redacted PDFs'] if result['pdfs'] else [])
     if not views:
         return
     view = st.radio('Review output', views, horizontal=True)
-    draft = (dict(zip((s['source'] for s in result['sections']), result['cleaned'])) if view == 'Markdown packet' else
+    draft = (dict(zip((s['source'] for s in result['sections']), result['cleaned'])) if view == 'Markdown documents' else
              {s['source']: s['text'] for pdf in result['pdfs'] for s in pdf['sections']})
     location = st.selectbox('Page or section', list(draft), format_func=lambda value: document_label(value, names),
                            key='ner_review_location_' + Path(result['output']).name + view)
@@ -196,35 +199,37 @@ def render_ner(dirs):
     with right:
         st.write('Prepared text — check for remaining identities')
         st.code(readable_text(draft[location]), language=None, wrap_lines=True, height=350)
-    markdown = result['markdown']
+    markdown = {}
     if 'markdown' in result['formats']:
-        with st.expander('Edit the Markdown packet before approval'):
-            markdown = st.text_area('Reviewed Markdown', value=markdown, height=400,
-                                    key='ner_edit_' + Path(result['output']).name)
-        packet_name = Path(result.get('packet_name', 'packet-redacted.md'))
-        st.download_button('Download Markdown review draft', result['markdown'],
-                           file_name=packet_name.stem + '-review-required.md')
+        documents = result.get('markdown_documents', {result.get('packet_name', 'packet-redacted.md'): result['markdown']})
+        for name, text in documents.items():
+            with st.expander('Edit ' + name + ' before approval'):
+                markdown[name] = st.text_area('Reviewed Markdown — ' + name, value=text, height=400,
+                    key='ner_edit_' + Path(result['output']).name + name)
+                st.download_button('Download Markdown review draft — ' + name, text,
+                                   file_name=Path(name).stem + '-review-required.md')
     for pdf in result['pdfs']:
-        source_name = Path(result.get('source_names', [])[pdf['document'] - 1]) if result.get('source_names') else Path(pdf['path'])
+        source_name = Path(result['filename_mapping'][pdf['document'] - 1]['new_name']) if 'filename_mapping' in result else Path(pdf['path'])
         st.download_button('Download PDF review draft — ' + document_label(f'Document {pdf["document"]}', names), Path(pdf['path']).read_bytes(),
-                           file_name=source_name.stem + '-redacted-review-required' + source_name.suffix, key='ner_pdf_' + pdf['path'])
-    stamp = sha256((result['output'] + markdown).encode()).hexdigest()
-    findings = packet_findings(result['output'], markdown) if 'markdown' in result['formats'] else []
+                           file_name=source_name.stem + '-review-required' + source_name.suffix, key='ner_pdf_' + pdf['path'])
+    stamp = sha256((result['output'] + json.dumps(markdown, sort_keys=True)).encode()).hexdigest()
+    findings = [dict(item, file=name) for name, text in markdown.items() for item in packet_findings(result['output'], text)]
     override, review_note = False, ''
     if findings:
-        st.warning(f'{len(findings)} occurrence(s) in the Markdown packet need your decision. '
+        st.warning(f'{len(findings)} occurrence(s) in the Markdown documents need your decision. '
                    'These are potential identifiers, not proof that the text identifies someone.')
-        st.dataframe([{'Flagged text': item['text'], 'Type': item['type'], 'Document / page': document_label(item['location'], names),
-                       'Packet line': item['line'], 'Context': item['context'], 'Why flagged': item['reason']}
+        st.dataframe([{'File': item['file'], 'Flagged text': item['text'], 'Type': item['type'], 'Document / page': document_label(item['location'], names),
+                       'Markdown line': item['line'], 'Context': item['context'], 'Why flagged': item['reason']}
                       for item in findings], hide_index=True)
-        st.caption('Correct the text in “Edit the Markdown packet before approval”, or explicitly keep it below. '
-                   'An override retains the listed text in the saved packet and is recorded in the private manifest.')
+        st.caption('Correct the text in the corresponding Markdown editor, or explicitly keep it below. '
+                   'An override retains the listed text in the saved documents and is recorded in the private manifest.')
         override = st.checkbox('Keep the flagged text and save anyway.', key='ner_override_' + stamp)
         review_note = st.text_input('Reason for keeping the text (optional)', key='ner_override_note_' + stamp)
     confirmed = st.checkbox('I reviewed all prepared pages and corrected their identifying information.', key='ner_confirm_' + stamp)
     if st.button('Save reviewed outputs', disabled=not confirmed or (bool(findings) and not override)):
         try:
-            exports = approve_outputs(result, markdown, override=override, review_note=review_note)
+            reviewed = markdown if 'markdown_documents' in result else next(iter(markdown.values()), '')
+            exports = approve_outputs(result, reviewed, override=override, review_note=review_note)
             st.session_state['ner_approved'] = {'stamp': stamp, 'files': exports, 'override': bool(findings),
                                                 'folders': result['reviewed_folders']}
         except (OSError, ValueError) as error:
@@ -232,7 +237,7 @@ def render_ner(dirs):
     approved = st.session_state.get('ner_approved', {})
     if approved.get('stamp') == stamp:
         if approved.get('override'):
-            st.warning('Saved with your verification override. The flagged text remains in the Markdown packet.')
+            st.warning('Saved with your verification override. The flagged text remains in the Markdown documents.')
         else:
             st.success('User-reviewed outputs saved.')
         for kind, folder in approved.get('folders', {}).items():

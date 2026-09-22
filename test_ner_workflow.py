@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pymupdf
 
-from utils.clinical_packet import Section, prepare_packet, packet_findings, PacketReviewRequired
+from utils.clinical_packet import Section, extract_case, prepare_packet, packet_findings, PacketReviewRequired
 from utils.document_formats import extract_document
 from utils.ner_workflow import prepare_outputs, approve_outputs
 from utils.reidentification import restore_batch
@@ -45,9 +45,9 @@ class NerWorkflowTest(unittest.IsolatedAsyncioTestCase):
             folders = {'markdown': str(home / 'Reviewed text'), 'pdf': str(home / 'Reviewed PDFs')}
             result = await prepare_outputs([source], source_root=root, output=home / 'case', secure=home / 'secure',
                 detector=Detector([person('Alex Example')]), formats=['markdown', 'pdf'], export_folders=folders)
-            exports = approve_outputs(result, result['markdown'])
-            self.assertEqual(exports, [str(home / 'Reviewed text/Report-redacted.md'),
-                                       str(home / 'Reviewed PDFs/Report-redacted.pdf')])
+            exports = approve_outputs(result, result['markdown_documents'])
+            self.assertEqual(exports, [str(home / 'Reviewed text/document-001.md'),
+                                       str(home / 'Reviewed PDFs/document-001.pdf')])
             self.assertEqual(result['reviewed_folders'], folders)
             private = json.loads((home / 'case/PRIVATE.json').read_text())
             self.assertEqual(private['export_folders'], folders)
@@ -62,7 +62,7 @@ class NerWorkflowTest(unittest.IsolatedAsyncioTestCase):
             blocked.write_text('Existing user file')
             result['export_folders']['pdf'] = str(blocked / 'pdf')
             with self.assertRaises(OSError):
-                approve_outputs(result, result['markdown'])
+                approve_outputs(result, result['markdown_documents'])
             self.assertFalse(list((home / 'Reviewed text-2').glob('*.md')))
             self.assertTrue(all(Path(path).exists() for path in exports))
             self.assertEqual(blocked.read_text(), 'Existing user file')
@@ -160,8 +160,8 @@ class NerWorkflowTest(unittest.IsolatedAsyncioTestCase):
                         clip = pymupdf.Rect(35, 125, 350, 148)
                         self.assertEqual(page.get_pixmap(clip=clip).samples, old.get_pixmap(clip=clip).samples)
             self.assertIn('Beery VMI', result['markdown'])
-            exports = approve_outputs(result, result['markdown'])
-            self.assertEqual(len(exports), 3)
+            exports = approve_outputs(result, result['markdown_documents'])
+            self.assertEqual(len(exports), 4)
             self.assertIn('**USER REVIEWED.**', Path(exports[0]).read_text())
             manifest = json.loads((home / 'case/PRIVATE.json').read_text())
             self.assertEqual(manifest['verification'], 'user_approved')
@@ -170,47 +170,68 @@ class NerWorkflowTest(unittest.IsolatedAsyncioTestCase):
             for path in exports:
                 self.assertEqual(Path(path).stat().st_mode & 0o777, 0o600)
             self.assertEqual([Path(path).name for path in exports],
-                             ['reports-redacted.md', 'private-name-0-redacted.pdf', 'private-name-1-redacted.pdf'])
+                             ['document-001.md', 'document-002.md', 'document-001.pdf', 'document-002.pdf'])
             restored = restore_batch(exports, root=home / 'reports-redacted', output=home / 'restored', secure=home / 'secure')
             self.assertFalse(restored['failed'])
-            self.assertEqual(len(restored['completed']), 3)
+            self.assertEqual(len(restored['completed']), 4)
             for path in restored['completed']:
                 text = '\n'.join(value for _, value in extract_document(path))
                 self.assertIn('Alex Example', text)
                 self.assertNotIn('Jamie Review', text)
                 self.assertNotIn('1270753', text)
             with self.assertRaisesRegex(ValueError, 'Known identifying'):
-                approve_outputs(result, result['markdown'] + '\nAlex Example')
+                approve_outputs(result, {**result['markdown_documents'], 'document-001.md': result['markdown_documents']['document-001.md'] + '\nAlex Example'})
             Path(result['pdfs'][0]['path']).write_bytes(b'edited')
             with self.assertRaisesRegex(ValueError, 'changed outside'):
-                approve_outputs(result, result['markdown'])
+                approve_outputs(result, result['markdown_documents'])
 
-    async def test_named_sibling_exports_preserve_subfolders_and_previous_saves(self):
+    async def test_sequential_exports_map_original_subfolders_and_preserve_previous_saves(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory).resolve()
             root = home / 'Medical Reports'
             files = []
-            for folder in ['Consultations', 'Assessments']:
+            for number, folder in enumerate(['Consultations', 'Assessments'], 1):
                 source = root / folder / 'Report.pdf'
                 source.parent.mkdir(parents=True)
                 with pymupdf.open() as pdf:
-                    pdf.new_page().insert_text((40, 60), 'Alex Example. Dose 5 mg.')
+                    pdf.new_page().insert_text((40, 60), f'Alex Example. Dose {number * 5} mg.')
                     pdf.save(source)
                 files.append(source)
             originals = [source.read_bytes() for source in files]
-            result = await prepare_outputs(files, source_root=root, output=home / 'case', secure=home / 'secure',
-                                           detector=Detector([person('Alex Example')]), formats=['markdown', 'pdf'])
+            def extract_working_copies(paths):
+                self.assertEqual([path.name for path in paths], ['document-001.pdf', 'document-002.pdf'])
+                self.assertEqual([path.read_bytes() for path in paths], originals)
+                self.assertTrue(all(path.stat().st_mode & 0o777 == 0o600 for path in paths))
+                return extract_case(paths)
+
+            with patch('utils.ner_workflow.extract_case', side_effect=extract_working_copies):
+                result = await prepare_outputs(files, source_root=root, output=home / 'case', secure=home / 'secure',
+                                               detector=Detector([person('Alex Example')]), formats=['markdown', 'pdf'])
             expected_folder = home / 'Medical Reports-redacted'
             self.assertFalse(expected_folder.exists())
-            exports = approve_outputs(result, result['markdown'])
+            exports = approve_outputs(result, result['markdown_documents'])
             self.assertEqual([str(Path(path).relative_to(expected_folder)) for path in exports],
-                             ['Medical Reports-redacted.md', 'Consultations/Report-redacted.pdf',
-                              'Assessments/Report-redacted.pdf'])
+                             ['document-001.md', 'document-002.md', 'document-001.pdf', 'document-002.pdf'])
             self.assertFalse((expected_folder / 'PRIVATE.json').exists())
+            for number, path in enumerate(exports[:2], 1):
+                text = Path(path).read_text()
+                self.assertIn(f'## document-{number:03d}, page 1', text)
+                self.assertIn(f'Dose {number * 5} mg.', text)
+                self.assertNotIn(f'Dose {(3 - number) * 5} mg.', text)
+                self.assertNotIn('Report.pdf', text)
+            private = json.loads((home / 'case/PRIVATE.json').read_text())
+            self.assertEqual([entry['original_name'] for entry in private['filename_mapping']],
+                             ['Consultations/Report.pdf', 'Assessments/Report.pdf'])
+            for number, entry in enumerate(private['filename_mapping'], 1):
+                self.assertEqual(entry['new_name'], f'document-{number:03d}.pdf')
+                self.assertEqual(entry['reviewed_outputs'], {
+                    'markdown': str(expected_folder / f'document-{number:03d}.md'),
+                    'pdf': str(expected_folder / f'document-{number:03d}.pdf')})
+                self.assertTrue((home / 'case' / f'REVIEW_REQUIRED-document-{number:03d}.md').exists())
             before = [Path(path).read_bytes() for path in exports]
             # Even a user-edited previous export is retained when saving again.
             Path(exports[0]).write_text('User changes')
-            second = approve_outputs(result, result['markdown'])
+            second = approve_outputs(result, result['markdown_documents'])
             self.assertTrue(all(Path(path).is_relative_to(home / 'Medical Reports-redacted-2') for path in second))
             self.assertEqual([Path(path).read_bytes() for path in second], before)
             self.assertEqual(Path(exports[0]).read_text(), 'User changes')
@@ -218,6 +239,31 @@ class NerWorkflowTest(unittest.IsolatedAsyncioTestCase):
             manifest = json.loads((home / 'case/PRIVATE.json').read_text())
             self.assertEqual(len(manifest['export_history']), 2)
             self.assertEqual(manifest['reviewed_outputs'], second)
+
+    async def test_each_markdown_is_reviewed_and_edits_stay_with_its_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            files = [home / 'private-one.txt', home / 'private-two.txt']
+            for number, source in enumerate(files, 1):
+                source.write_text(f'Alex Example. Dose {number * 5} mg.')
+            result = await prepare_outputs(files, output=home / 'case', secure=home / 'secure',
+                export_folder=home / 'exports', detector=Detector([person('Alex Example')]), formats=['markdown'])
+            edited = dict(result['markdown_documents'])
+            with self.assertRaisesRegex(ValueError, 'one Markdown file per source'):
+                approve_outputs(result, {'document-001.md': edited['document-001.md']})
+            edited['document-002.md'] += '\nAlex Example\n'
+            with self.assertRaises(PacketReviewRequired):
+                approve_outputs(result, edited)
+            self.assertFalse((home / 'exports').exists())
+            edited['document-002.md'] = result['markdown_documents']['document-002.md'] + '\nReviewed second document.\n'
+            exports = approve_outputs(result, edited)
+            self.assertNotIn('Reviewed second document.', Path(exports[0]).read_text())
+            self.assertIn('Reviewed second document.', Path(exports[1]).read_text())
+            edited['document-001.md'] += '\nAlex Example\n'
+            approve_outputs(result, edited, override=True)
+            manifest = json.loads((home / 'case/PRIVATE.json').read_text())
+            self.assertEqual(manifest['verification'], 'user_override')
+            self.assertEqual(len(manifest['reviewed_markdown_sha256']), 2)
 
     async def test_pdf_export_is_withheld_when_an_identifier_survives(self):
         with tempfile.TemporaryDirectory() as directory:

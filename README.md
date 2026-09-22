@@ -127,14 +127,14 @@ python scripts/benchmark_local.py --output /tmp/guardian-model-comparison
 ### Prepare for AI with local NER
 
 Guardian opens with **Prepare for AI (local NER)**, **Folder** input and **Both**
-Markdown and PDF outputs selected. This integrates the NER
+Markdown and PDF outputs selected. Each input gets its own output file in each selected format. This integrates the NER
 experiment and its saved keep-term list into the application. Ollama and cloud
 credentials are not used by this workflow; the existing Ollama workflows remain
 available.
 
 1. On a new machine, click **Install local NER support** once. The first run
    downloads the pinned model; document processing stays local.
-2. Choose **Markdown packet**, **Redacted PDFs**, or **Both**. PDF output requires
+2. Choose **Markdown documents**, **Redacted PDFs**, or **Both**. PDF output requires
    PDF inputs and preserves their page appearance. Markdown also accepts TXT,
    MD, HTML, DOCX, XLSX and PPTX.
 3. Select files or a folder for **one patient**. Folder mode shares **Input folder**
@@ -142,23 +142,28 @@ available.
    own destination: **Markdown output folder** and **PDF output folder**.
    Change either suggested location if needed. Confirm
    that the selection belongs to that patient, then click **Prepare documents**.
-4. Compare original and prepared text by page or section. Download PDF drafts to
+4. Guardian assigns sequential names (`document-001`, `document-002`, etc.) to
+   private working copies before processing. Source files stay untouched.
+   Compare original and prepared text by page or section. Download PDF drafts to
    inspect their appearance. Every selected file appears in the status table under
-   its original filename, with a separate Markdown and PDF status. Withheld PDFs
+   its original filename and new filename, with a separate Markdown and PDF status. Withheld PDFs
    show the filename, exact remaining text, type and page. Review all pages,
    not only the first displayed page.
 5. Correct false positives in **Keep terms**, or add missed names and addresses
    under **Additional identifying text to remove**, then prepare again. Saved
-   keep terms apply to later NER runs. You can also edit the Markdown directly.
+   keep terms apply to later NER runs. You can also edit each Markdown document directly.
 6. Confirm review and click **Save reviewed outputs**. Only share the reviewed
    documents. Keep `PRIVATE.json` and the case folder private.
 
 Reviewed NER exports go into the folder selected for each format. Suggested
 locations are `Medical Reports-redacted/markdown` and `Medical Reports-redacted/pdf`.
-PDFs keep their original names
-and subfolders: `Consultations/Report.pdf` becomes
-`Consultations/Report-redacted.pdf`. The combined Markdown packet is named
-`Medical Reports-redacted.md`, or `Report-redacted.md` for a single document.
+PDF and Markdown exports use matching neutral names: the first input becomes
+`document-001.pdf` and `document-001.md`, the second becomes `document-002.pdf`
+and `document-002.md`. Numbering follows the selected file order within each run.
+Original subfolders are not carried into the exported filenames. The private
+`PRIVATE.json` manifest includes `filename_mapping`, recording each original
+relative path, assigned working filename, planned output names, and saved output
+paths. Keep this mapping private. Markdown headings use the new document names.
 Uploaded files also have editable per-format destinations, suggested under
 `data/output/<document name>-redacted/markdown` and `.../pdf`, or
 `data/output/Documents-redacted/` for multiple files. An existing output folder is
@@ -170,11 +175,11 @@ with the same filenames.
 Private manifests and identity mappings stay in the private case folder.
 
 If the edited Markdown still contains potential identifiers, the review screen
-lists the exact text, identity type, document/page, packet line and nearby text,
+lists the output filename, exact text, identity type, document/page, Markdown line and nearby text,
 along with why it was flagged. Correct it in the editor, or select **Keep the
 flagged text and save anyway**. An optional note, the accepted findings and the
-saved file digest are recorded privately as `user_override`. The packet is marked
-as retaining flagged text. Editing the packet resets the override; the choice
+saved file digest are recorded privately as `user_override`. Each affected document is marked
+as retaining flagged text. Editing any Markdown document resets the override; the choice
 does not change detection or the keep list for future runs.
 
 Each run gets its own folder under `data/secure/ner-cases/`. Its private manifest
@@ -182,7 +187,7 @@ records sources, identity mapping, keep terms, manual removals, document/page/wo
 counts, identity types, processing time, PDF failures and approval. NER is a span
 detector, so generation tokens per second does not apply. Previous results and
 originals are retained. A failed new run does not display an older result as its
-own output. PDF export failures retain successful drafts and the Markdown packet.
+own output. PDF export failures retain successful drafts and the Markdown documents.
 
 The ten reviewed phrases from the experiment are the initial keep list. Edit and
 save them in the UI or run `python prepare_for_ai.py --add-keep-term "Digit span"`.

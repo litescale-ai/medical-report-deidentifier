@@ -261,32 +261,39 @@ async def prepare_packet(sections, detector, *, keep_terms=(), remove_terms=(), 
     checked = re.sub(r'\[[A-Z]+(?:_\d+| REMOVED)\]', '', review_text)
     if rule_replacements(review_text) or (replacements and re.search(replacement_pattern(replacements), checked)):
         raise ValueError('Known identifiers remain; no packet written.')
+    return {'markdown': render_packet(cleaned), 'mapping': mapping, 'keep_terms': keep_terms,
+            'cleaned': [s.text for s in cleaned], 'replacements': replacements,
+            'stats': {**detector.metadata, 'sections': len(sections), 'entities': len(mapping),
+                      'rule_values': len(rules), 'kept_terms': len(keep_terms), 'seconds': round(perf_counter() - started, 3)}}
+
+
+def render_packet(sections):
+    """Render extracted sections with the same review notice and literal text boundaries."""
     parts = ['# Clinical evidence packet',
              '**REVIEW REQUIRED.** Automated pseudonymisation can miss identifiers or remove clinical text. '
              'Check against the originals before sharing. Keep placeholders unchanged when drafting. '
              'Different placeholders may refer to the same person; do not infer relationships.',
              'Text extraction may omit images, drawings, charts, annotations or table layout. '
              'Check these in the originals.']
-    for section in cleaned:
+    for section in sections:
         # A literal code block prevents source HTML/images/links from making network requests in preview.
         fence = '`' * max(3, 1 + max((len(m.group()) for m in re.finditer(r'`+', section.text)), default=0))
         parts.append(f'## {section.source}\n\n{fence}text\n{section.text}\n{fence}')
-    return {'markdown': '\n\n'.join(parts) + '\n', 'mapping': mapping, 'keep_terms': keep_terms,
-            'cleaned': [s.text for s in cleaned], 'replacements': replacements,
-            'stats': {**detector.metadata, 'sections': len(sections), 'entities': len(mapping),
-                      'rule_values': len(rules), 'kept_terms': len(keep_terms), 'seconds': round(perf_counter() - started, 3)}}
+    return '\n\n'.join(parts) + '\n'
 
 
 def write_packet(result, output, sources):
     """Create a new private case folder; never overwrite a previous packet or originals."""
     output = Path(output)
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
-    payloads = {
-        'REVIEW_REQUIRED.md': result['markdown'],
-        'PRIVATE.json': json.dumps({'sources': [str(Path(p).resolve()) for p in sources],
-                                    'identities': result['mapping'], 'replacements': result['replacements'],
-                                    'keep_terms': result['keep_terms'], 'stats': result['stats']}, indent=2),
-    }
+    private = {'sources': [str(Path(p).resolve()) for p in sources],
+               'identities': result['mapping'], 'replacements': result['replacements'],
+               'keep_terms': result['keep_terms'], 'stats': result['stats']}
+    if 'filename_mapping' in result:
+        private['filename_mapping'] = result['filename_mapping']
+    payloads = ({'REVIEW_REQUIRED-' + name: text for name, text in result['markdown_documents'].items()}
+                if 'markdown_documents' in result else {'REVIEW_REQUIRED.md': result['markdown']})
+    payloads['PRIVATE.json'] = json.dumps(private, indent=2)
     for name, content in payloads.items():
         fd = os.open(output / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, 'w') as stream:
@@ -318,7 +325,7 @@ def packet_findings(output, text):
         return []
     normalize = lambda value: ' '.join(value.casefold().split())
     details = {normalize(value): (replacement, value in rules) for value, replacement in values.items()}
-    headings = list(re.finditer(r'^## (Document \d+[^\n]*)$', text, re.MULTILINE))
+    headings = list(re.finditer(r'^## ((?:Document \d+|document-\d+)[^\n]*)$', text, re.MULTILINE))
     findings = []
     for match in pattern.finditer(checked):
         value = text[match.start():match.end()]
